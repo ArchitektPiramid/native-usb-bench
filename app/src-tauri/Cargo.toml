@@ -1,0 +1,18 @@
+[package]
+name = "nativeusb-bench"
+version = "0.5.3"
+description = "Native USB vendor bulk benchmark for STM32 and other MCUs"
+authors = ["NativeUSB Bench"]
+edition = "2021"
+
+[lib]
+name = "nativeusb_bench_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+rusb = { version = "0.9.4", features = ["vendored"] }
