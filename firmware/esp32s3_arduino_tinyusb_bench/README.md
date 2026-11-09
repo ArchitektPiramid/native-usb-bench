@@ -1,91 +1,44 @@
-# ESP32-S3 / Arduino-ESP32 / TinyUSB target
+# ESP32-S3 — Arduino-ESP32 / TinyUSB
 
-NativeUSB Bench target for the ESP32-S3 native USB controller using Arduino-ESP32 + TinyUSB.
+Firmware for the **ESP32-S3 native USB/OTG controller**. For the common USB layout, EP0 requests and `NUB1` frame format, see the [firmware overview](../README.md).
 
-## USB layout
+## Flash with Arduino IDE
 
-```text
-Interface 0 - Vendor Specific (0xFF)
-  EP0       - NativeUSB control plane
-  Bulk OUT  - discovered from descriptor (normally 0x01), reserved for OUT/duplex benchmark
-  Bulk IN   - discovered from descriptor (normally 0x81), MCU -> PC benchmark stream
-```
+1. Install **ESP32 by Espressif Systems 3.3.x** in Boards Manager (3.3.11 is the previously tested baseline). TinyUSB is provided by the ESP32 Arduino core; do not add a separate TinyUSB library.
+2. Open `esp32s3_arduino_tinyusb_bench.ino` and select **ESP32S3 Dev Module** or your board's matching ESP32-S3 definition.
+3. Configure **Tools**:
 
-The firmware uses NativeUSB Protocol 1.0, the same EP0 requests and the same `NUB1` Bulk frame format as the STM32 target.
+   | Option | Value |
+   | --- | --- |
+   | USB Mode | **USB-OTG (TinyUSB)** |
+   | USB CDC On Boot | **Disabled** |
+   | USB DFU On Boot | **Disabled** (if shown) |
+   | USB MSC On Boot | **Disabled** (if shown) |
 
-## Tested framework target
+4. Select the upload port and click **Upload**. Use the board's USB-UART connector if available; otherwise enter ROM download mode on the native USB port (commonly **hold BOOT → tap RESET → release BOOT**). Exact flashing steps depend on the board.
+5. Boot normally and connect the **native USB/OTG** port to the PC. The benchmark interface is a WinUSB vendor device, **not** an Arduino COM port. Open NativeUSB Bench and select **Refresh → Connect → Start**.
 
-The firmware is written against Arduino-ESP32 3.3.x and the previous stable ESP32-S3 transport was tested with 3.3.11. `GET_DEVICE_INFO` reports the Arduino-ESP32 version actually used to compile the sketch.
+## Windows device
 
-## Arduino IDE settings
+| Field | Value |
+| --- | --- |
+| Development VID:PID | `CAFE:4013` |
+| USB interface | Vendor-specific (`0xFF`) |
+| Bulk IN / OUT | Usually `0x81` / `0x01` (host discovers endpoints) |
+| Driver | `winusb.sys` |
 
-Typical settings for `ESP32S3 Dev Module`:
+The firmware advertises Microsoft OS 1.0/WCID (`MSFT100` / `WINUSB`) for automatic WinUSB binding on supported Windows installations. If connection fails, check the driver on the **vendor interface**; do not replace the ROM bootloader or USB-UART driver. The USB `bcdDevice` value `5.00` is not the firmware release version.
 
-```text
-USB Mode            USB-OTG (TinyUSB)
-USB CDC On Boot     Disabled
-USB DFU On Boot     Disabled (if shown)
-USB MSC On Boot     Disabled (if shown)
-```
+## Target defaults
 
-Only the native USB/OTG connector carries the NativeUSB Vendor interface. A separate UART/USB bridge can still be used for flashing/debug output when the board provides one.
+| Parameter | Value |
+| --- | --- |
+| USB | Full-Speed, 12 Mbit/s signaling |
+| Bulk max packet size | 64 B |
+| Test direction | MCU → PC (Bulk IN) |
+| NUB1 frame | 4096 B total (16 B header + 4080 B payload) |
+| Default payload generator | Xorshift32 (Ramp8 and LFSR32 also available) |
 
-## Windows / WinUSB
+The **4096 B** frame cap is deliberate: earlier S3 tests found direct TinyUSB/DCD transfers around 4 KiB more reliable than larger submissions. The firmware builds one deterministic frame in `loop()`, submits a Bulk IN transfer and waits for the endpoint to become idle before sending the next frame. It does not use a separate producer task.
 
-Development VID/PID:
-
-```text
-VID 0xCAFE
-PID 0x4013
-bcdDevice 5.00
-```
-
-The sketch provides Microsoft OS 1.0/WCID descriptors itself:
-
-```text
-MSFT100 -> Compatible ID WINUSB
-```
-
-so Windows can bind the inbox `winusb.sys` driver without Zadig or a custom INF.
-
-## Benchmark defaults
-
-```text
-USB speed           Full-Speed 12 Mbit/s
-Bulk MPS            64 B
-Frame size          4096 B
-Header              16 B NUB1
-Payload             4080 B
-Default generator   Xorshift32
-Other generators    Ramp8, LFSR32
-Direction           MCU -> PC (Bulk IN)
-```
-
-The maximum logical frame is intentionally kept at 4096 B on this first S3 target. Earlier ESP32-S3 testing showed that approximately 4 KiB direct DCD submissions are a stable high-throughput path, while larger low-level submissions can become less reliable.
-
-## Data path
-
-```text
-loop()
-  -> build one deterministic NUB1 frame
-  -> submit one direct TinyUSB/DCD Bulk IN transfer
-  -> wait until endpoint is idle
-  -> next frame
-```
-
-There is no matrix/sensor model and no second producer task. Payload generation is deliberately cheap so the benchmark focuses on USB transport.
-
-## Control plane
-
-All low-rate control stays on EP0:
-
-```text
-0x30 COMMAND
-0x31 GET_STATUS
-0x32 GET_DEVICE_INFO
-0x33 GET_CAPABILITIES
-0x34 GET_CONFIG
-0x35 SET_CONFIG
-```
-
-Bulk OUT is not used for commands.
+`GET_DEVICE_INFO` reports the Arduino-ESP32 version used to build the sketch. Record actual benchmark results in the main project README rather than treating the 12 Mbit/s USB speed as measured throughput.

@@ -1,39 +1,52 @@
 # MCU NativeUSB Bench
 
-Cross-platform USB throughput benchmarking and device inspection tool for microcontrollers.
+USB throughput benchmarking and device inspection tool for microcontrollers.
 
-The project provides a desktop application together with matching MCU firmware for testing native USB implementations, streaming data and inspecting USB devices.
+The project provides a Windows desktop application and matching MCU firmware for testing native USB implementations, streaming data, and measuring transfer performance.
 
-The goal is to provide a common test environment for different microcontrollers and USB frameworks.
+The goal is to provide a common benchmarking environment for different microcontrollers and USB frameworks.
 
 ## Features
 
-- USB device enumeration & descriptor inspection
-- interface and endpoint viewer
-- real-time USB data streaming
-- throughput measurement & transfer rate statistics
-- bit balance / data integrity statistics
-- configurable test data generation
-- support for multiple MCU platforms
-- matching firmware examples for each supported MCU
+- USB device enumeration and descriptor inspection
+- Interface and endpoint viewer
+- Real-time USB Bulk streaming
+- Throughput monitoring (MB/s, Mbit/s)
+- Bit balance and data integrity statistics
+- Configurable test data generation
+- Firmware examples for supported MCU platforms
 
-## Supported platforms
 
-Current and planned MCU support includes:
+![NativeUSB Bench](docs/images/nativeusb-bench-overview.png)
 
-| MCU      | Framework           | USB                | Status    |
-| -------- | ------------------- | ------------------ | --------- |
-| ESP32-S3 | Arduino / ESP-IDF   | USB 2.0 Full-Speed | Supported |
-| STM32    | Arduino / STM32Cube | USB FS / HS        | Supported |
+## Supported Platforms
 
-Support for additional MCUs and frameworks is planned
+| MCU | Framework | USB | Status | Speed |
+|---|---|---|---|---|
+| ESP32-S3 | Arduino / TinyUSB | Full-Speed | Supported | 0.75 MB/s |
+| ESP32-P4 | Arduino / TinyUSB | High-Speed  | WIP | x |
+| STM32 | STM32Cube / Arduino | FS / HS | WIP | x |
 
-## Application
 
-The desktop application is built with:
+## Getting Started
 
-- Tauri
-- Rust
-- React
-- TypeScript
-- Vite
+**Run from source**
+
+```bash
+cd app
+pnpm install
+pnpm tauri dev
+```
+
+Flash the matching firmware from the `firmware/` directory, connect the MCU via native USB, and select the device in the application.
+
+## Tech Stack
+
+- **Desktop:** Tauri 2, Rust
+- **Frontend:** React, TypeScript, Vite
+- **USB Backend:** Rust, WinUSB
+- **Firmware:** Arduino / TinyUSB
+
+## License
+
+MIT License.
