@@ -97,17 +97,17 @@ export function useNativeUsbBench() {
 
     try {
       await tauriBackend.disconnect();
-    } catch (e) {
-      const message = String(e);
-      setError(message);
-      addLocalLog("error", message);
-    } finally {
       setConnectedKey("");
       setDeviceDetails(null);
       setConfig(null);
       setStats(EMPTY_STATS);
       setHistory([]);
       setPayloadVisual(null);
+    } catch (e) {
+      const message = String(e);
+      setError(message);
+      addLocalLog("error", message);
+    } finally {
       setBusy(false);
     }
   }, [addLocalLog]);
@@ -188,54 +188,69 @@ export function useNativeUsbBench() {
   useEffect(() => {
     let disposed = false;
     const cleanup: Array<() => void> = [];
+    // React StrictMode can unmount while an async Tauri listen() is pending.
+    // Immediately unsubscribe listeners that resolve after cleanup.
+    const register = async (subscription: Promise<() => void>) => {
+      const unsubscribe = await subscription;
+      if (disposed) unsubscribe();
+      else cleanup.push(unsubscribe);
+    };
 
     void (async () => {
-      cleanup.push(
-        await tauriBackend.onStats((nextStats) => {
-          if (disposed) return;
-          setStats(nextStats);
-          if (nextStats.streaming) {
-            setHistory((old) => [...old.slice(-79), nextStats.mb_per_sec]);
-          }
-        }),
-      );
+      try {
+        await register(
+          tauriBackend.onStats((nextStats) => {
+            if (disposed) return;
+            setStats(nextStats);
+            if (nextStats.streaming) {
+              setHistory((old) => [...old.slice(-79), nextStats.mb_per_sec]);
+            }
+          }),
+        );
 
-      cleanup.push(
-        await tauriBackend.onPayloadVisual((visual) => {
-          if (disposed) return;
-          setPayloadVisual(visual);
-        }),
-      );
+        await register(
+          tauriBackend.onPayloadVisual((visual) => {
+            if (disposed) return;
+            setPayloadVisual(visual);
+          }),
+        );
 
-      cleanup.push(
-        await tauriBackend.onError((message) => {
-          if (disposed) return;
+        await register(
+          tauriBackend.onError((message) => {
+            if (disposed) return;
+            setError(message);
+            addLocalLog("error", message);
+          }),
+        );
+
+        await register(
+          tauriBackend.onDisconnected(() => {
+            if (disposed) return;
+            setConnectedKey("");
+            setDeviceDetails(null);
+            setConfig(null);
+            setStats(EMPTY_STATS);
+            setPayloadVisual(null);
+            addLocalLog("warn", "USB worker disconnected");
+          }),
+        );
+
+        await register(
+          tauriBackend.onLog((event) => {
+            if (disposed) return;
+            addLocalLog(event.level, event.message);
+          }),
+        );
+
+        if (!disposed) {
+          await refreshDevices();
+        }
+      } catch (e) {
+        if (!disposed) {
+          const message = `Failed to subscribe to USB events: ${String(e)}`;
           setError(message);
           addLocalLog("error", message);
-        }),
-      );
-
-      cleanup.push(
-        await tauriBackend.onDisconnected(() => {
-          if (disposed) return;
-          setConnectedKey("");
-          setDeviceDetails(null);
-          setConfig(null);
-          setStats(EMPTY_STATS);
-          setPayloadVisual(null);
-          addLocalLog("warn", "USB worker disconnected");
-        }),
-      );
-
-      cleanup.push(
-        await tauriBackend.onLog((event) => {
-          if (disposed) return;
-          addLocalLog(event.level, event.message);
-        }),
-      );
-
-      if (!disposed) {
-        await refreshDevices();
+        }
       }
     })();
 

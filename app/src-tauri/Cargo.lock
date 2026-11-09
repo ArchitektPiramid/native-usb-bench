@@ -1841,7 +1841,7 @@ dependencies = [
 
 [[package]]
 name = "nativeusb-bench"
-version = "0.5.3"
+version = "0.1.0"
 dependencies = [
  "rusb",
  "serde",
