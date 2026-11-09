@@ -1,0 +1,73 @@
+name: Windows CI
+
+on:
+  push:
+    branches: [features, main]
+    tags: ["v*"]
+  pull_request:
+    branches: [features, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Host checks
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri -> target
+      - name: Install dependencies
+        run: pnpm --dir app install --frozen-lockfile
+      - name: Type check
+        run: pnpm --dir app check
+      - name: Frontend build
+        run: pnpm --dir app build
+      - name: Rust tests
+        run: cargo test --manifest-path app/src-tauri/Cargo.toml --locked
+
+  installer:
+    name: Windows NSIS installer
+    runs-on: windows-latest
+    needs: checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri -> target
+      - name: Install dependencies
+        run: pnpm --dir app install --frozen-lockfile
+      - name: Build NSIS installer
+        run: pnpm --dir app exec tauri build --bundles nsis
+      - name: Upload installer preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: nativeusb-windows-${{ github.run_id }}
+          path: app/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 7
