@@ -1,25 +1,19 @@
 use crate::protocol::{
-    BenchmarkConfig,
-    FrameParser,
-    PayloadVisual,
-    CMD_RESET,
-    CMD_START,
-    CMD_STOP,
-    MAX_FRAME_SIZE,
+    BenchmarkConfig, FrameParser, PayloadVisual, CMD_RESET, CMD_START, CMD_STOP, MAX_FRAME_SIZE,
 };
 use crate::usb::{
-    find_device,
-    open_and_claim,
-    send_usb_command,
-    set_device_config,
-    usb_log,
-    ConnectedDeviceInfo,
+    find_device, open_and_claim, send_usb_command, set_device_config, usb_log, ConnectedDeviceInfo,
 };
 use serde::Serialize;
-use std::{ sync::{ mpsc, Mutex }, thread, time::{ Duration, Instant } };
-use tauri::{ AppHandle, Emitter };
+use std::{
+    sync::{mpsc, Mutex},
+    thread,
+    time::{Duration, Instant},
+};
+use tauri::{AppHandle, Emitter};
 
-// rruntime tuning knobs
+// Runtime tuning knobs. These intentionally live together so the hot-path
+// behavior can be changed without hunting through the worker implementation.
 pub(crate) const STATS_EMIT_INTERVAL_MS: u64 = 250;
 pub(crate) const VISUAL_EMIT_INTERVAL_MS: u64 = 100;
 const BULK_READ_TIMEOUT_MS: u64 = 100;
@@ -96,9 +90,12 @@ pub(crate) struct AppState {
 pub(crate) fn connect_device(
     device_key: String,
     app: AppHandle,
-    state: &AppState
+    state: &AppState,
 ) -> Result<ConnectedDeviceInfo, String> {
-    let mut guard = state.worker.lock().map_err(|_| "State lock poisoned".to_string())?;
+    let mut guard = state
+        .worker
+        .lock()
+        .map_err(|_| "State lock poisoned".to_string())?;
 
     if guard.as_ref().is_some_and(|worker| worker.join.is_finished()) {
         if let Some(worker) = guard.take() {
@@ -156,12 +153,10 @@ pub(crate) fn connect_device(
                                 parser.config().generator,
                                 parser.config().frame_size,
                                 parser.config().seed
-                            )
+                            ),
                         );
-                        if
-                            let Err(error) = send_usb_command(&handle, CMD_RESET).and_then(|_|
-                                send_usb_command(&handle, CMD_START)
-                            )
+                        if let Err(error) = send_usb_command(&handle, CMD_RESET)
+                            .and_then(|_| send_usb_command(&handle, CMD_START))
                         {
                             usb_log(&app, "error", error.clone());
                             let _ = app.emit("bench-error", error);
@@ -181,22 +176,15 @@ pub(crate) fn connect_device(
                         let result = if stats.streaming {
                             Err("Stop the benchmark before changing configuration".to_string())
                         } else {
-                            set_device_config(
-                                &handle,
-                                &capabilities,
-                                max_packet_size,
-                                &requested
-                            ).map(|applied| {
+                            set_device_config(&handle, &capabilities, max_packet_size, &requested).map(|applied| {
                                 parser.set_config(applied.clone());
                                 usb_log(
                                     &app,
                                     "info",
                                     format!(
                                         "config applied: generator={} frame={}B seed=0x{:08X}",
-                                        applied.generator,
-                                        applied.frame_size,
-                                        applied.seed
-                                    )
+                                        applied.generator, applied.frame_size, applied.seed
+                                    ),
                                 );
                                 applied
                             })
@@ -212,13 +200,11 @@ pub(crate) fn connect_device(
             }
 
             if stats.streaming {
-                match
-                    handle.read_bulk(
-                        ep_in,
-                        &mut read_buffer,
-                        Duration::from_millis(BULK_READ_TIMEOUT_MS)
-                    )
-                {
+                match handle.read_bulk(
+                    ep_in,
+                    &mut read_buffer,
+                    Duration::from_millis(BULK_READ_TIMEOUT_MS),
+                ) {
                     Ok(count) if count > 0 => {
                         sample_usb_reads += 1;
                         stats.bytes_total += count as u64;
@@ -244,9 +230,8 @@ pub(crate) fn connect_device(
                 thread::sleep(Duration::from_millis(IDLE_SLEEP_MS));
             }
 
-            if
-                stats.streaming &&
-                last_visual_emit.elapsed() >= Duration::from_millis(VISUAL_EMIT_INTERVAL_MS)
+            if stats.streaming
+                && last_visual_emit.elapsed() >= Duration::from_millis(VISUAL_EMIT_INTERVAL_MS)
             {
                 if let Some(visual) = parser.payload_visual() {
                     if Some(visual.sequence) != last_visual_sequence {
@@ -259,16 +244,16 @@ pub(crate) fn connect_device(
 
             if last_emit.elapsed() >= Duration::from_millis(STATS_EMIT_INTERVAL_MS) {
                 let interval = last_emit.elapsed().as_secs_f64().max(0.001);
-                stats.mb_per_sec = (sample_bytes as f64) / 1_000_000.0 / interval;
+                stats.mb_per_sec = (sample_bytes as f64 / 1_000_000.0) / interval;
                 stats.mbit_per_sec = stats.mb_per_sec * 8.0;
-                stats.frames_per_sec = (sample_frames as f64) / interval;
-                stats.usb_reads_per_sec = (sample_usb_reads as f64) / interval;
+                stats.frames_per_sec = sample_frames as f64 / interval;
+                stats.usb_reads_per_sec = sample_usb_reads as f64 / interval;
 
                 if let Some(start) = started_at {
                     stats.elapsed_ms = start.elapsed().as_millis() as u64;
                     let elapsed = start.elapsed().as_secs_f64();
                     stats.avg_mb_per_sec = if elapsed > 0.0 {
-                        (stats.bytes_total as f64) / 1_000_000.0 / elapsed
+                        (stats.bytes_total as f64 / 1_000_000.0) / elapsed
                     } else {
                         0.0
                     };
@@ -307,13 +292,19 @@ pub(crate) fn stop_benchmark(state: &AppState) -> Result<(), String> {
 
 pub(crate) fn set_benchmark_config(
     state: &AppState,
-    config: BenchmarkConfig
+    config: BenchmarkConfig,
 ) -> Result<BenchmarkConfig, String> {
-    let guard = state.worker.lock().map_err(|_| "State lock poisoned".to_string())?;
-    let worker = guard.as_ref().ok_or_else(|| "No USB device connected".to_string())?;
+    let guard = state
+        .worker
+        .lock()
+        .map_err(|_| "State lock poisoned".to_string())?;
+    let worker = guard
+        .as_ref()
+        .ok_or_else(|| "No USB device connected".to_string())?;
 
     let (reply_tx, reply_rx) = mpsc::channel();
-    worker.command_tx
+    worker
+        .command_tx
         .send(WorkerCommand::SetConfig(config, reply_tx))
         .map_err(|_| "USB worker has stopped".to_string())?;
 
@@ -324,7 +315,10 @@ pub(crate) fn set_benchmark_config(
 
 pub(crate) fn disconnect_device(state: &AppState) -> Result<(), String> {
     let worker = {
-        let mut guard = state.worker.lock().map_err(|_| "State lock poisoned".to_string())?;
+        let mut guard = state
+            .worker
+            .lock()
+            .map_err(|_| "State lock poisoned".to_string())?;
         guard.take()
     };
 
@@ -336,8 +330,16 @@ pub(crate) fn disconnect_device(state: &AppState) -> Result<(), String> {
 }
 
 fn send_simple_worker_command(state: &AppState, command: WorkerCommand) -> Result<(), String> {
-    let guard = state.worker.lock().map_err(|_| "State lock poisoned".to_string())?;
-    let worker = guard.as_ref().ok_or_else(|| "No USB device connected".to_string())?;
+    let guard = state
+        .worker
+        .lock()
+        .map_err(|_| "State lock poisoned".to_string())?;
+    let worker = guard
+        .as_ref()
+        .ok_or_else(|| "No USB device connected".to_string())?;
 
-    worker.command_tx.send(command).map_err(|_| "USB worker has stopped".to_string())
+    worker
+        .command_tx
+        .send(command)
+        .map_err(|_| "USB worker has stopped".to_string())
 }

@@ -111,6 +111,10 @@ export type UsbLogEvent = {
   message: string;
 };
 
+export type ProcessStats = {
+  cpu_usage_percent: number | null;
+};
+
 export type LogLine = UsbLogEvent & {
   id: number;
   time: string;

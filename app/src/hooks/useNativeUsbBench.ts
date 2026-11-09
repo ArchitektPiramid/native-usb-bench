@@ -24,6 +24,7 @@ export function useNativeUsbBench() {
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [logs, setLogs] = useState<LogLine[]>([]);
+  const [processCpuUsage, setProcessCpuUsage] = useState<number | null>(null);
 
   const connected = Boolean(connectedKey);
   const selected = useMemo(
@@ -142,31 +143,45 @@ export function useNativeUsbBench() {
   );
 
   const startBenchmark = useCallback(async () => {
+    if (!connected || busy || stats.streaming) return;
+
+    setBusy(true);
     setError("");
     setHistory([]);
     setPayloadVisual(null);
     addLocalLog("info", "start benchmark");
 
     try {
+      // The Rust command resolves only after the MCU accepts RESET + START.
       await tauriBackend.startBenchmark();
     } catch (e) {
       const message = String(e);
       setError(message);
       addLocalLog("error", message);
+    } finally {
+      setBusy(false);
     }
-  }, [addLocalLog]);
+  }, [addLocalLog, busy, connected, stats.streaming]);
 
   const stopBenchmark = useCallback(async () => {
+    if (!connected || busy || !stats.streaming) return;
+
+    setBusy(true);
+    setError("");
     addLocalLog("info", "stop benchmark");
 
     try {
+      // Stop resolves after the MCU accepts STOP and the final frozen stats
+      // snapshot has been emitted by the worker.
       await tauriBackend.stopBenchmark();
     } catch (e) {
       const message = String(e);
       setError(message);
       addLocalLog("error", message);
+    } finally {
+      setBusy(false);
     }
-  }, [addLocalLog]);
+  }, [addLocalLog, busy, connected, stats.streaming]);
 
   const clearLogs = useCallback(() => setLogs([]), []);
 
@@ -232,6 +247,37 @@ export function useNativeUsbBench() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    let disposed = false;
+    let inFlight = false;
+
+    const updateProcessCpu = async () => {
+      if (inFlight) return;
+      inFlight = true;
+
+      try {
+        const processStats = await tauriBackend.getProcessStats();
+        if (!disposed) {
+          setProcessCpuUsage(processStats.cpu_usage_percent);
+        }
+      } catch {
+        if (!disposed) {
+          setProcessCpuUsage(null);
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void updateProcessCpu();
+    const intervalId = window.setInterval(() => void updateProcessCpu(), 500);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
   return {
     devices,
     selected,
@@ -241,6 +287,7 @@ export function useNativeUsbBench() {
     deviceDetails,
     config,
     stats,
+    processCpuUsage,
     history,
     payloadVisual,
     error,

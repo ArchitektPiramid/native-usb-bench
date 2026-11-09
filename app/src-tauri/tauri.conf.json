@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "MCU NativeUSB Bench",
+  "productName": "NativeUSB Bench",
   "version": "0.1.0",
   "identifier": "dev.nativeusb.bench",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "MCU NativeUSB Bench",
+        "title": "NativeUSB Bench \u2014 Vendor WinUSB",
         "width": 1060,
         "height": 800,
         "minWidth": 740,
@@ -27,6 +27,11 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"]
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ]
   }
 }

@@ -3,6 +3,7 @@ import type {
   BenchmarkConfig,
   ConnectedDeviceInfo,
   PayloadVisual,
+  ProcessStats,
   UsbDeviceInfo,
   UsbLogEvent,
 } from "./types";
@@ -16,6 +17,7 @@ export interface NativeUsbBackend {
   setConfig(config: BenchmarkConfig): Promise<BenchmarkConfig>;
   startBenchmark(): Promise<void>;
   stopBenchmark(): Promise<void>;
+  getProcessStats(): Promise<ProcessStats>;
 
   onStats(handler: (stats: BenchStats) => void): Promise<Unsubscribe>;
   onPayloadVisual(handler: (visual: PayloadVisual) => void): Promise<Unsubscribe>;

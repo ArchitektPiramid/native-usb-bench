@@ -1,0 +1,27 @@
+# frontend
+app/node_modules/
+app/dist/
+
+# tauri / rust
+app/src-tauri/target/
+
+# arduino
+*.bin
+*.elf
+*.hex
+*.map
+*.d
+*.o
+
+# editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# local packaging helpers / generated archives
+/scripts/
+/archives/
+/docs/
+
+/node_modules/

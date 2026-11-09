@@ -1,4 +1,5 @@
 import { StreamPanel } from "./components/BenchmarkPanel";
+import { DebugLog } from "./components/DebugLog";
 import { DevicePanel } from "./components/DevicePanel";
 import { BitBalance, PayloadVisualizer } from "./components/PayloadVisualizer";
 import { useNativeUsbBench } from "./hooks/useNativeUsbBench";
@@ -47,6 +48,7 @@ export default function App() {
             capabilities={bench.deviceDetails?.capabilities ?? null}
             usbSpeed={bench.deviceDetails?.usb.speed ?? null}
             stats={bench.stats}
+            processCpuUsage={bench.processCpuUsage}
             history={bench.history}
             onGeneratorChange={(generator) => void bench.setGenerator(generator)}
             onStart={() => void bench.startBenchmark()}
@@ -55,6 +57,14 @@ export default function App() {
           <BitBalance visual={bench.payloadVisual} />
         </div>
       </section>
+
+      <details className="debug-details">
+        <summary>
+          <span>Debug log</span>
+          <span>{bench.logs.length} entries</span>
+        </summary>
+        <DebugLog logs={bench.logs} onClear={bench.clearLogs} />
+      </details>
     </main>
   );
 }

@@ -6,6 +6,7 @@ import type {
   BenchmarkConfig,
   ConnectedDeviceInfo,
   PayloadVisual,
+  ProcessStats,
   UsbDeviceInfo,
   UsbLogEvent,
 } from "./types";
@@ -33,6 +34,10 @@ export const tauriBackend: NativeUsbBackend = {
 
   stopBenchmark() {
     return invoke("stop_benchmark");
+  },
+
+  getProcessStats() {
+    return invoke<ProcessStats>("get_process_stats");
   },
 
   onStats(handler) {

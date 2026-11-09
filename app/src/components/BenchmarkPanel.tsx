@@ -12,6 +12,7 @@ type StreamPanelProps = {
   capabilities: DeviceCapabilities | null;
   usbSpeed: string | null;
   stats: BenchStats;
+  processCpuUsage: number | null;
   history: number[];
   onGeneratorChange: (generator: number) => void;
   onStart: () => void;
@@ -46,6 +47,7 @@ export function StreamPanel({
   capabilities,
   usbSpeed,
   stats,
+  processCpuUsage,
   history,
   onGeneratorChange,
   onStart,
@@ -56,9 +58,8 @@ export function StreamPanel({
   );
 
   const nominalRateMbit = nominalUsbRateMbit(usbSpeed);
-  const busUtilization = nominalRateMbit && nominalRateMbit > 0
-    ? Math.max(0, (stats.mbit_per_sec / nominalRateMbit) * 100)
-    : null;
+  const nominalLinkUsage =
+    nominalRateMbit && nominalRateMbit > 0 ? Math.max(0, (stats.mbit_per_sec / nominalRateMbit) * 100) : null;
 
   const points = useMemo(() => {
     if (history.length === 0) return "";
@@ -118,7 +119,16 @@ export function StreamPanel({
       <div className="stream-stat-list">
         <StreamStat label="Frames / s" value={`${stats.frames_per_sec.toFixed(1)} /s`} />
         <StreamStat label="USB reads" value={`${stats.usb_reads_per_sec.toFixed(1)} /s`} />
-        <StreamStat label="Bus utilization" value={busUtilization == null ? "—" : `${busUtilization.toFixed(1)}%`} />
+        <StreamStat
+          label="Process CPU"
+          value={processCpuUsage == null ? "—" : `${processCpuUsage.toFixed(1)}%`}
+          title="CPU usage of the NativeUSB Bench host process, normalized across all logical processors."
+        />
+        <StreamStat
+          label="Payload / link rate"
+          value={nominalLinkUsage == null ? "—" : `${nominalLinkUsage.toFixed(1)}%`}
+          title="Application payload throughput divided by the nominal USB signaling rate. This is not physical bus utilization."
+        />
         <StreamStat label="Received" value={fmtBytes(stats.bytes_total)} />
         <StreamStat label="Frames" value={stats.frames_total.toLocaleString()} />
         <StreamStat label="Dropped" value={stats.dropped_frames.toLocaleString()} bad={stats.dropped_frames > 0} />
@@ -132,9 +142,19 @@ export function StreamPanel({
   );
 }
 
-function StreamStat({ label, value, bad = false }: { label: string; value: string; bad?: boolean }) {
+function StreamStat({
+  label,
+  value,
+  bad = false,
+  title,
+}: {
+  label: string;
+  value: string;
+  bad?: boolean;
+  title?: string;
+}) {
   return (
-    <div className={`stream-stat-row ${bad ? "bad" : ""}`}>
+    <div className={`stream-stat-row ${bad ? "bad" : ""}`} title={title}>
       <span>{label}</span>
       <strong>{value}</strong>
     </div>

@@ -1,22 +1,14 @@
 use crate::protocol::{
-    encode_config,
-    parse_capabilities,
-    parse_config,
-    parse_device_info,
-    parse_status,
-    BenchmarkConfig,
-    DeviceCapabilities,
-    DeviceInfo,
-    FirmwareStatus,
-    CMD_PING,
+    encode_config, parse_capabilities, parse_config, parse_device_info, parse_status, BenchmarkConfig,
+    DeviceCapabilities, DeviceInfo, FirmwareStatus, CMD_PING,
 };
-use rusb::{ Device, DeviceHandle, Direction, GlobalContext, Speed, TransferType };
+use rusb::{Device, DeviceHandle, Direction, GlobalContext, Speed, TransferType};
 use serde::Serialize;
 use std::time::Duration;
-use tauri::{ AppHandle, Emitter };
+use tauri::{AppHandle, Emitter};
 
 const CTRL_OUT_VENDOR_DEVICE: u8 = 0x40;
-const CTRL_IN_VENDOR_DEVICE: u8 = 0xc0;
+const CTRL_IN_VENDOR_DEVICE: u8 = 0xC0;
 const REQ_COMMAND: u8 = 0x30;
 const REQ_STATUS: u8 = 0x31;
 const REQ_DEVICE_INFO: u8 = 0x32;
@@ -33,16 +25,16 @@ struct SupportedTarget {
 }
 
 // Discovery intentionally uses a small explicit target table. Transport details
-// (configuration/interface/endpoints/MPS) are discovered fro USB descriptors,
+// (configuration/interface/endpoints/MPS) are discovered from USB descriptors,
 // while MCU/framework identity comes from NativeUSB GET_DEVICE_INFO.
 const SUPPORTED_TARGETS: &[SupportedTarget] = &[
     SupportedTarget {
-        vid: 0xcafe,
+        vid: 0xCAFE,
         pid: 0x4012,
         label: "NativeUSB STM32 target",
     },
     SupportedTarget {
-        vid: 0xcafe,
+        vid: 0xCAFE,
         pid: 0x4013,
         label: "NativeUSB ESP32-S3 target",
     },
@@ -57,10 +49,13 @@ struct LogEvent {
 pub(crate) fn usb_log(app: &AppHandle, level: &str, message: impl Into<String>) {
     let message = message.into();
     eprintln!("[NativeUSB][{}] {}", level.to_ascii_uppercase(), message);
-    let _ = app.emit("usb-log", LogEvent {
-        level: level.to_string(),
-        message,
-    });
+    let _ = app.emit(
+        "usb-log",
+        LogEvent {
+            level: level.to_string(),
+            message,
+        },
+    );
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -117,16 +112,14 @@ struct BulkTransport {
 
 pub(crate) fn list_usb_devices(app: &AppHandle) -> Result<Vec<UsbDeviceInfo>, String> {
     // Refresh stays cheap and responsive: only enumerate + read the standard
-    // device descriptor. No device open and no EP0 metadata handshake here
+    // device descriptor. No device open and no EP0 metadata handshake here.
     let devices = rusb::devices().map_err(|error| format!("libusb enumerate failed: {error}"))?;
     let mut out = Vec::new();
 
     for device in devices.iter() {
         let descriptor = match device.device_descriptor() {
             Ok(descriptor) => descriptor,
-            Err(_) => {
-                continue;
-            }
+            Err(_) => continue,
         };
 
         let Some(target) = supported_target(descriptor.vendor_id(), descriptor.product_id()) else {
@@ -151,13 +144,8 @@ pub(crate) fn list_usb_devices(app: &AppHandle) -> Result<Vec<UsbDeviceInfo>, St
             "info",
             format!(
                 "target found: bus {} addr {} {:04X}:{:04X} {} ({})",
-                info.bus,
-                info.address,
-                info.vid,
-                info.pid,
-                info.speed,
-                target.label
-            )
+                info.bus, info.address, info.vid, info.pid, info.speed, target.label
+            ),
         );
         out.push(info);
     }
@@ -182,7 +170,7 @@ pub(crate) fn find_device(key: &str) -> Result<Device<GlobalContext>, String> {
 
 pub(crate) fn open_and_claim(
     device: &Device<GlobalContext>,
-    app: &AppHandle
+    app: &AppHandle,
 ) -> Result<OpenedDevice, String> {
     let descriptor = device
         .device_descriptor()
@@ -211,7 +199,7 @@ pub(crate) fn open_and_claim(
             descriptor.vendor_id(),
             descriptor.product_id(),
             target.label
-        )
+        ),
     );
 
     let handle = match device.open() {
@@ -221,33 +209,38 @@ pub(crate) fn open_and_claim(
         }
         Err(error) => {
             usb_log(app, "error", format!("device open failed: {error}"));
-            return Err(
-                format!(
-                    "Cannot open {:04X}:{:04X}: {error}. On Windows this normally means WinUSB is not bound to this device instance.",
-                    descriptor.vendor_id(),
-                    descriptor.product_id()
-                )
-            );
+            return Err(format!(
+                "Cannot open {:04X}:{:04X}: {error}. On Windows this normally means WinUSB is not bound to this device instance.",
+                descriptor.vendor_id(), descriptor.product_id()
+            ));
         }
     };
 
     if let Ok(active) = handle.active_configuration() {
         if active != bulk.configuration {
-            handle
-                .set_active_configuration(bulk.configuration)
-                .map_err(|error| {
-                    format!("Cannot select USB configuration {}: {error}", bulk.configuration)
-                })?;
+            handle.set_active_configuration(bulk.configuration).map_err(|error| {
+                format!(
+                    "Cannot select USB configuration {}: {error}",
+                    bulk.configuration
+                )
+            })?;
         }
     }
 
     usb_log(
         app,
         "info",
-        format!("claiming interface {} alt {}", bulk.interface, bulk.alternate_setting)
+        format!(
+            "claiming interface {} alt {}",
+            bulk.interface, bulk.alternate_setting
+        ),
     );
     handle.claim_interface(bulk.interface).map_err(|error| {
-        usb_log(app, "error", format!("claim interface {} failed: {error}", bulk.interface));
+        usb_log(
+            app,
+            "error",
+            format!("claim interface {} failed: {error}", bulk.interface),
+        );
         format!("Cannot claim interface {}: {error}", bulk.interface)
     })?;
 
@@ -257,8 +250,7 @@ pub(crate) fn open_and_claim(
             .map_err(|error| {
                 format!(
                     "Cannot select alternate setting {} on interface {}: {error}",
-                    bulk.alternate_setting,
-                    bulk.interface
+                    bulk.alternate_setting, bulk.interface
                 )
             })?;
     }
@@ -268,14 +260,11 @@ pub(crate) fn open_and_claim(
         "info",
         format!(
             "interface {} claimed; EP0 control, Bulk IN=0x{:02X}, Bulk OUT=0x{:02X}, MPS={} B",
-            bulk.interface,
-            bulk.ep_in,
-            bulk.ep_out,
-            bulk.max_packet_size
-        )
+            bulk.interface, bulk.ep_in, bulk.ep_out, bulk.max_packet_size
+        ),
     );
 
-    // The same EP0 handshake is req from every MCU/framework target
+    // The same EP0 handshake is required from every MCU/framework target.
     send_usb_command(&handle, CMD_PING)?;
     let device_info = read_device_info(&handle)?;
     let capabilities = read_capabilities(&handle)?;
@@ -283,12 +272,10 @@ pub(crate) fn open_and_claim(
     let status = read_firmware_status(&handle)?;
 
     if !status.configured {
-        return Err(
-            format!(
-                "Firmware reports USB state {} and configured=false after interface claim.",
-                status.usb_state
-            )
-        );
+        return Err(format!(
+            "Firmware reports USB state {} and configured=false after interface claim.",
+            status.usb_state
+        ));
     }
 
     usb_log(
@@ -298,32 +285,21 @@ pub(crate) fn open_and_claim(
             "device info: target={} mcu={} board={} cpu={}MHz firmware={} protocol={} framework={} usb_stack={}",
             device_info.target_name,
             device_info.mcu_name,
-            if device_info.board_name.is_empty() {
-                "unknown"
-            } else {
-                device_info.board_name.as_str()
-            },
+            if device_info.board_name.is_empty() { "unknown" } else { device_info.board_name.as_str() },
             device_info.cpu_clock_hz / 1_000_000,
             device_info.firmware_version,
             device_info.protocol_version,
             device_info.framework_name,
-            if device_info.usb_stack_name.is_empty() {
-                "unknown"
-            } else {
-                device_info.usb_stack_name.as_str()
-            }
-        )
+            if device_info.usb_stack_name.is_empty() { "unknown" } else { device_info.usb_stack_name.as_str() }
+        ),
     );
     usb_log(
         app,
         "info",
         format!(
             "config: generator={} frame={}B seed=0x{:08X}; capabilities generators=0x{:08X}",
-            config.generator,
-            config.frame_size,
-            config.seed,
-            capabilities.generator_mask
-        )
+            config.generator, config.frame_size, config.seed, capabilities.generator_mask
+        ),
     );
 
     Ok(OpenedDevice {
@@ -351,7 +327,7 @@ pub(crate) fn open_and_claim(
 
 pub(crate) fn send_usb_command(
     handle: &DeviceHandle<GlobalContext>,
-    command: u8
+    command: u8,
 ) -> Result<(), String> {
     let count = handle
         .write_control(
@@ -360,7 +336,7 @@ pub(crate) fn send_usb_command(
             command as u16,
             0,
             &[],
-            Duration::from_millis(CONTROL_TIMEOUT_MS)
+            Duration::from_millis(CONTROL_TIMEOUT_MS),
         )
         .map_err(|error| {
             format!(
@@ -378,7 +354,7 @@ pub(crate) fn set_device_config(
     handle: &DeviceHandle<GlobalContext>,
     capabilities: &DeviceCapabilities,
     max_packet_size: u16,
-    requested: &BenchmarkConfig
+    requested: &BenchmarkConfig,
 ) -> Result<BenchmarkConfig, String> {
     validate_config(capabilities, max_packet_size, requested)?;
     let data = encode_config(requested);
@@ -389,32 +365,32 @@ pub(crate) fn set_device_config(
             0,
             0,
             &data,
-            Duration::from_millis(CONTROL_TIMEOUT_MS)
+            Duration::from_millis(CONTROL_TIMEOUT_MS),
         )
         .map_err(|error| format!("EP0 SET_CONFIG failed: {error}"))?;
 
     if count != data.len() {
-        return Err(format!("EP0 SET_CONFIG wrote {count} bytes, expected {}", data.len()));
+        return Err(format!(
+            "EP0 SET_CONFIG wrote {count} bytes, expected {}",
+            data.len()
+        ));
     }
 
     let applied = read_config(handle)?;
-    if
-        applied.generator != requested.generator ||
-        applied.frame_size != requested.frame_size ||
-        applied.seed != requested.seed ||
-        applied.mode != requested.mode
+    if applied.generator != requested.generator
+        || applied.frame_size != requested.frame_size
+        || applied.seed != requested.seed
+        || applied.mode != requested.mode
     {
-        return Err(
-            format!(
-                "Firmware did not apply requested config. Requested generator={} frame={} seed=0x{:08X}; applied generator={} frame={} seed=0x{:08X}",
-                requested.generator,
-                requested.frame_size,
-                requested.seed,
-                applied.generator,
-                applied.frame_size,
-                applied.seed
-            )
-        );
+        return Err(format!(
+            "Firmware did not apply requested config. Requested generator={} frame={} seed=0x{:08X}; applied generator={} frame={} seed=0x{:08X}",
+            requested.generator,
+            requested.frame_size,
+            requested.seed,
+            applied.generator,
+            applied.frame_size,
+            applied.seed
+        ));
     }
     Ok(applied)
 }
@@ -422,50 +398,47 @@ pub(crate) fn set_device_config(
 fn validate_config(
     capabilities: &DeviceCapabilities,
     max_packet_size: u16,
-    config: &BenchmarkConfig
+    config: &BenchmarkConfig,
 ) -> Result<(), String> {
     if !capabilities.supports_generator(config.generator) {
-        return Err(format!("Generator {} is not supported by this target", config.generator));
+        return Err(format!(
+            "Generator {} is not supported by this target",
+            config.generator
+        ));
     }
     if config.mode != 1 {
         return Err("This firmware currently supports MCU -> PC (IN) benchmark mode only".into());
     }
-    if
-        config.frame_size < capabilities.min_frame_size ||
-        config.frame_size > capabilities.max_frame_size
+    if config.frame_size < capabilities.min_frame_size
+        || config.frame_size > capabilities.max_frame_size
     {
-        return Err(
-            format!(
-                "Frame size {} is outside device range {}..{}",
-                config.frame_size,
-                capabilities.min_frame_size,
-                capabilities.max_frame_size
-            )
-        );
+        return Err(format!(
+            "Frame size {} is outside device range {}..{}",
+            config.frame_size, capabilities.min_frame_size, capabilities.max_frame_size
+        ));
     }
-    if max_packet_size == 0 || config.frame_size % (max_packet_size as u32) != 0 {
-        return Err(
-            format!("Frame size must be a multiple of the target Bulk MPS ({} bytes)", max_packet_size)
-        );
+    if max_packet_size == 0 || config.frame_size % max_packet_size as u32 != 0 {
+        return Err(format!(
+            "Frame size must be a multiple of the target Bulk MPS ({} bytes)",
+            max_packet_size
+        ));
     }
     Ok(())
 }
 
 fn find_vendor_bulk(
     device: &Device<GlobalContext>,
-    num_configurations: u8
+    num_configurations: u8,
 ) -> Result<Option<BulkTransport>, String> {
     for config_index in 0..num_configurations {
         let config = match device.config_descriptor(config_index) {
             Ok(config) => config,
-            Err(_) => {
-                continue;
-            }
+            Err(_) => continue,
         };
 
         for interface in config.interfaces() {
             for descriptor in interface.descriptors() {
-                if descriptor.class_code() != 0xff {
+                if descriptor.class_code() != 0xFF {
                     continue;
                 }
 
@@ -491,16 +464,14 @@ fn find_vendor_bulk(
                 }
 
                 if let (Some(ep_in), Some(ep_out)) = (ep_in, ep_out) {
-                    return Ok(
-                        Some(BulkTransport {
-                            configuration: config.number(),
-                            interface: descriptor.interface_number(),
-                            alternate_setting: descriptor.setting_number(),
-                            ep_in,
-                            ep_out,
-                            max_packet_size,
-                        })
-                    );
+                    return Ok(Some(BulkTransport {
+                        configuration: config.number(),
+                        interface: descriptor.interface_number(),
+                        alternate_setting: descriptor.setting_number(),
+                        ep_in,
+                        ep_out,
+                        max_packet_size,
+                    }));
                 }
             }
         }
@@ -522,18 +493,14 @@ fn read_device_info(handle: &DeviceHandle<GlobalContext>) -> Result<DeviceInfo, 
             0,
             0,
             &mut data,
-            Duration::from_millis(CONTROL_TIMEOUT_MS)
+            Duration::from_millis(CONTROL_TIMEOUT_MS),
         )
-        .map_err(|error|
-            format!("EP0 GET_DEVICE_INFO failed (bRequest=0x{REQ_DEVICE_INFO:02X}): {error}")
-        )?;
+        .map_err(|error| format!("EP0 GET_DEVICE_INFO failed (bRequest=0x{REQ_DEVICE_INFO:02X}): {error}"))?;
     data.truncate(count);
     if count < DEVICE_INFO_MIN_SIZE {
-        return Err(
-            format!(
-                "EP0 GET_DEVICE_INFO returned {count} bytes, expected at least {DEVICE_INFO_MIN_SIZE}"
-            )
-        );
+        return Err(format!(
+            "EP0 GET_DEVICE_INFO returned {count} bytes, expected at least {DEVICE_INFO_MIN_SIZE}"
+        ));
     }
     parse_device_info(&data)
 }
@@ -557,7 +524,7 @@ fn read_control_blob(
     handle: &DeviceHandle<GlobalContext>,
     request: u8,
     size: usize,
-    label: &str
+    label: &str,
 ) -> Result<Vec<u8>, String> {
     let mut data = vec![0u8; size];
     let count = handle
@@ -567,18 +534,22 @@ fn read_control_blob(
             0,
             0,
             &mut data,
-            Duration::from_millis(CONTROL_TIMEOUT_MS)
+            Duration::from_millis(CONTROL_TIMEOUT_MS),
         )
         .map_err(|error| format!("EP0 {label} failed (bRequest=0x{request:02X}): {error}"))?;
     data.truncate(count);
     if count < size {
-        return Err(format!("EP0 {label} returned {count} bytes, expected at least {size}"));
+        return Err(format!(
+            "EP0 {label} returned {count} bytes, expected at least {size}"
+        ));
     }
     Ok(data)
 }
 
 fn supported_target(vid: u16, pid: u16) -> Option<&'static SupportedTarget> {
-    SUPPORTED_TARGETS.iter().find(|target| target.vid == vid && target.pid == pid)
+    SUPPORTED_TARGETS
+        .iter()
+        .find(|target| target.vid == vid && target.pid == pid)
 }
 
 fn usb_version_name(version: rusb::Version) -> String {
