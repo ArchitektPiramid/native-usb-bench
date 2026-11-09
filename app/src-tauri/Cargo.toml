@@ -1,6 +1,6 @@
 [package]
 name = "nativeusb-bench"
-version = "0.5.3"
+version = "0.1.0"
 description = "Native USB vendor bulk benchmark for STM32 and other MCUs"
 authors = ["NativeUSB Bench"]
 edition = "2021"

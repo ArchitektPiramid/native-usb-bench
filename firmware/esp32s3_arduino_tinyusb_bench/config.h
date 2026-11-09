@@ -37,8 +37,8 @@ constexpr uint16_t kTargetId = 0x3203;
 constexpr uint16_t kMcuWireId = 0x0003;
 
 constexpr uint8_t kFirmwareMajor = 0;
-constexpr uint8_t kFirmwareMinor = 5;
-constexpr uint8_t kFirmwarePatch = 1;
+constexpr uint8_t kFirmwareMinor = 1;
+constexpr uint8_t kFirmwarePatch = 0;
 
 // ESP32-S3 native USB is USB Full-Speed, so Bulk MPS is 64 B.
 constexpr uint16_t kUsbMaxPacket = 64;
