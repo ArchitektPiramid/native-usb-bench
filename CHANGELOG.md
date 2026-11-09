@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Split ESP32-S3 descriptors, EP0 handling and Bulk transfers.
 - Split host USB discovery, EP0 control, wire protocol and frame parsing.
 - Run Windows host checks only for PRs to `features` or manual requests.
 
