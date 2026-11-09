@@ -10,6 +10,9 @@ bool begin();
 void task();
 
 bool configured();
+// Poll the submitted Bulk IN frame without blocking the main loop.
+enum class BulkInState : uint8_t { Idle, Pending, Completed, Failed };
+BulkInState pollBulkIn();
 bool txBusy();
 bool writeFrame(const uint8_t* data, uint16_t length);
 

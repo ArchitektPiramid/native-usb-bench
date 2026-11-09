@@ -1,12 +1,7 @@
 #include "usb_transport.h"
 #include "usb_transport_internal.h"
 
-#include <cstring>
-
 #include "device/usbd_pvt.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-
 #include "config.h"
 
 namespace NativeUsbEsp32 {
@@ -19,10 +14,11 @@ uint8_t g_bulk_out_drain[kBulkOutDrainBufferSize] __attribute__((aligned(4)));
 uint8_t g_vendor_bulk_in_endpoint = 0;
 uint8_t g_vendor_bulk_out_endpoint = 0;
 bool g_vendor_mounted_last_loop = false;
-volatile bool g_tx_busy = false;
+bool g_tx_in_flight = false;
+bool g_tx_timed_out = false;
+uint32_t g_tx_started_ms = 0;
 volatile uint32_t g_bulk_in_transfers = 0;
 volatile uint32_t g_bulk_out_transfers = 0;
-
 
 bool discoverVendorBulkEndpoints() {
   if (g_vendor_bulk_in_endpoint != 0 && g_vendor_bulk_out_endpoint != 0) {
@@ -66,62 +62,24 @@ bool discoverVendorBulkEndpoints() {
   return g_vendor_bulk_in_endpoint != 0 && g_vendor_bulk_out_endpoint != 0;
 }
 
-bool waitBulkInIdle(uint32_t timeout_ms) {
-  if (!discoverVendorBulkEndpoints()) {
+// Submit one frame; TinyUSB keeps the buffer until the endpoint becomes idle.
+bool submitBulkIn(const uint8_t* data, size_t size) {
+  if (!vendor.mounted() || data == nullptr || size == 0 || size > 0xFFFFu ||
+      !discoverVendorBulkEndpoints() || g_tx_in_flight ||
+      usbd_edpt_busy(0, g_vendor_bulk_in_endpoint) ||
+      !usbd_edpt_claim(0, g_vendor_bulk_in_endpoint)) {
     return false;
   }
 
-  const uint32_t started = millis();
-  while (usbd_edpt_busy(0, g_vendor_bulk_in_endpoint)) {
-    if (!vendor.mounted()) {
-      return false;
-    }
-    if (static_cast<uint32_t>(millis() - started) >= timeout_ms) {
-      return false;
-    }
-    taskYIELD();
+  if (!usbd_edpt_xfer(0, g_vendor_bulk_in_endpoint,
+                     const_cast<uint8_t*>(data), static_cast<uint16_t>(size), false)) {
+    return false;
   }
+
+  g_tx_in_flight = true;
+  g_tx_timed_out = false;
+  g_tx_started_ms = millis();
   return true;
-}
-
-bool directBulkInTransfer(const uint8_t* data, size_t size, uint32_t timeout_ms) {
-  if (!vendor.mounted() || data == nullptr || size == 0 || size > 0xFFFFu) {
-    return false;
-  }
-  if (!discoverVendorBulkEndpoints() || !waitBulkInIdle(timeout_ms)) {
-    return false;
-  }
-
-  const uint32_t started = millis();
-  while (!usbd_edpt_claim(0, g_vendor_bulk_in_endpoint)) {
-    if (!vendor.mounted()) {
-      return false;
-    }
-    if (static_cast<uint32_t>(millis() - started) >= timeout_ms) {
-      return false;
-    }
-    taskYIELD();
-  }
-
-  g_tx_busy = true;
-  const bool submitted = usbd_edpt_xfer(
-      0,
-      g_vendor_bulk_in_endpoint,
-      const_cast<uint8_t*>(data),
-      static_cast<uint16_t>(size),
-      false);
-
-  if (!submitted) {
-    g_tx_busy = false;
-    return false;
-  }
-
-  const bool completed = waitBulkInIdle(timeout_ms);
-  g_tx_busy = false;
-  if (completed) {
-    ++g_bulk_in_transfers;
-  }
-  return completed;
 }
 
 void drainReservedBulkOut() {
@@ -151,7 +109,7 @@ void drainReservedBulkOut() {
 
 namespace detail {
 
-bool bulkInTransferInProgress() { return g_tx_busy; }
+bool bulkInTransferInProgress() { return g_tx_in_flight; }
 uint32_t bulkInTransferCount() { return g_bulk_in_transfers; }
 uint32_t bulkOutTransferCount() { return g_bulk_out_transfers; }
 
@@ -180,11 +138,36 @@ bool configured() {
   return vendor.mounted();
 }
 
+BulkInState pollBulkIn() {
+  if (!g_tx_in_flight) {
+    return BulkInState::Idle;
+  }
+  if (!vendor.mounted()) {
+    g_tx_in_flight = false;
+    return BulkInState::Failed;
+  }
+  if (usbd_edpt_busy(0, g_vendor_bulk_in_endpoint)) {
+    // Do not reuse a timed-out buffer while the controller still owns it.
+    if (static_cast<uint32_t>(millis() - g_tx_started_ms) >=
+        BenchConfig::kUsbWriteTimeoutMs) {
+      g_tx_timed_out = true;
+    }
+    return BulkInState::Pending;
+  }
+
+  g_tx_in_flight = false;
+  if (g_tx_timed_out) {
+    return BulkInState::Failed;
+  }
+  ++g_bulk_in_transfers;
+  return BulkInState::Completed;
+}
+
 bool txBusy() {
   if (!vendor.mounted() || !discoverVendorBulkEndpoints()) {
     return false;
   }
-  return g_tx_busy || usbd_edpt_busy(0, g_vendor_bulk_in_endpoint);
+  return g_tx_in_flight || usbd_edpt_busy(0, g_vendor_bulk_in_endpoint);
 }
 
 bool writeFrame(const uint8_t* data, uint16_t length) {
@@ -193,7 +176,7 @@ bool writeFrame(const uint8_t* data, uint16_t length) {
       (length % BenchConfig::kUsbMaxPacket) != 0) {
     return false;
   }
-  return directBulkInTransfer(data, length, BenchConfig::kUsbWriteTimeoutMs);
+  return submitBulkIn(data, length);
 }
 
 }  // namespace NativeUsbEsp32
