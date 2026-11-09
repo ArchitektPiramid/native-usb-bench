@@ -4,6 +4,12 @@ on:
   pull_request:
     branches: [features]
   workflow_dispatch:
+    inputs:
+      build_portable:
+        description: Build a portable Windows ZIP instead of running checks
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -14,6 +20,7 @@ concurrency:
 
 jobs:
   checks:
+    if: ${{ github.event_name == 'pull_request' || !inputs.build_portable }}
     name: Host checks
     runs-on: windows-latest
     steps:
@@ -39,3 +46,32 @@ jobs:
       - name: Rust tests
         run: cargo test --manifest-path app/src-tauri/Cargo.toml --locked
 
+
+  portable:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_portable }}
+    name: Windows portable ZIP
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri -> target
+      - name: Build portable ZIP
+        shell: pwsh
+        run: ./scripts/build-portable.ps1
+      - name: Upload portable ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: nativeusb-bench-portable-${{ github.run_id }}
+          path: archives/nativeusb-bench-v*-windows-x64-portable.zip
+          if-no-files-found: error
+          retention-days: 7
