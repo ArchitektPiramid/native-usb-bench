@@ -22,6 +22,7 @@ const IDLE_SLEEP_MS: u64 = 5;
 const USB_ERROR_BACKOFF_MS: u64 = 10;
 const WORKER_REPLY_TIMEOUT_MS: u64 = 2500;
 const STREAM_STATE_TIMEOUT_MS: u64 = 1000;
+const TEN_SECOND_SUMMARY_MS: u64 = 10_000;
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct BenchStats {
@@ -133,6 +134,7 @@ pub(crate) fn connect_device(
         let mut sample_bytes = 0u64;
         let mut sample_frames = 0u64;
         let mut sample_usb_reads = 0u64;
+        let mut ten_second_summary_logged = false;
 
         'worker: loop {
             while let Ok(command) = command_rx.try_recv() {
@@ -150,6 +152,7 @@ pub(crate) fn connect_device(
                         sample_bytes = 0;
                         sample_frames = 0;
                         sample_usb_reads = 0;
+                        ten_second_summary_logged = false;
 
                         usb_log(
                             &app,
@@ -220,6 +223,7 @@ pub(crate) fn connect_device(
                                             (stats.bytes_total as f64 / 1_000_000.0) / elapsed;
                                     }
                                 }
+                                usb_log(&app, "info", format_benchmark_summary("final", &stats));
                                 stats.mb_per_sec = 0.0;
                                 stats.mbit_per_sec = 0.0;
                                 stats.frames_per_sec = 0.0;
@@ -325,6 +329,10 @@ pub(crate) fn connect_device(
                     };
                 }
 
+                if stats.streaming && !ten_second_summary_logged && stats.elapsed_ms >= TEN_SECOND_SUMMARY_MS {
+                    usb_log(&app, "info", format_benchmark_summary("10s", &stats));
+                    ten_second_summary_logged = true;
+                }
                 let _ = app.emit("bench-stats", stats.clone());
                 sample_bytes = 0;
                 sample_frames = 0;
@@ -342,6 +350,21 @@ pub(crate) fn connect_device(
 
     *guard = Some(WorkerHandle { command_tx, join });
     Ok(details)
+}
+
+/// Emits copyable decimal-rate summaries for the benchmark results table.
+fn format_benchmark_summary(label: &str, stats: &BenchStats) -> String {
+    format!(
+        "benchmark {label}: elapsed={:.2}s avg={:.3} MB/s ({:.3} Mbit/s) bytes={} frames={} dropped={} corrupt={} usb_errors={}",
+        stats.elapsed_ms as f64 / 1000.0,
+        stats.avg_mb_per_sec,
+        stats.avg_mb_per_sec * 8.0,
+        stats.bytes_total,
+        stats.frames_total,
+        stats.dropped_frames,
+        stats.corrupt_frames,
+        stats.usb_errors,
+    )
 }
 
 fn emit_visual(app: &AppHandle, visual: PayloadVisual) {
@@ -435,4 +458,35 @@ fn wait_for_stream_state(
         "Firmware did not confirm streaming={expected} within {STREAM_STATE_TIMEOUT_MS} ms{}",
         if last_error.is_empty() { String::new() } else { format!(": {last_error}") }
     ))
+}
+
+#[cfg(test)]
+mod benchmark_summary_tests {
+    use super::*;
+
+    #[test]
+    fn summary_reports_decimal_throughput_and_error_counters() {
+        let mut stats = BenchStats::idle(true);
+        stats.elapsed_ms = 10_000;
+        stats.bytes_total = 8_000_000;
+        stats.avg_mb_per_sec = 0.8;
+        stats.frames_total = 1953;
+        stats.dropped_frames = 2;
+        stats.corrupt_frames = 1;
+        stats.usb_errors = 3;
+
+        assert_eq!(
+            format_benchmark_summary("10s", &stats),
+            "benchmark 10s: elapsed=10.00s avg=0.800 MB/s (6.400 Mbit/s) bytes=8000000 frames=1953 dropped=2 corrupt=1 usb_errors=3"
+        );
+    }
+
+    #[test]
+    fn final_summary_supports_short_or_empty_runs() {
+        let stats = BenchStats::idle(true);
+        assert_eq!(
+            format_benchmark_summary("final", &stats),
+            "benchmark final: elapsed=0.00s avg=0.000 MB/s (0.000 Mbit/s) bytes=0 frames=0 dropped=0 corrupt=0 usb_errors=0"
+        );
+    }
 }
