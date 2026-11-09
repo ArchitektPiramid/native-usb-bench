@@ -1,8 +1,9 @@
 use crate::protocol::{
-    BenchmarkConfig, FrameParser, PayloadVisual, CMD_RESET, CMD_START, CMD_STOP, MAX_FRAME_SIZE,
+    BenchmarkConfig, FrameParser, PayloadVisual, CMD_RESET, CMD_START, CMD_STOP,
 };
 use crate::usb::{
-    find_device, open_and_claim, send_usb_command, set_device_config, usb_log, ConnectedDeviceInfo,
+    find_device, open_and_claim, read_firmware_status, send_usb_command, set_device_config,
+    usb_log, ConnectedDeviceInfo,
 };
 use serde::Serialize;
 use std::{
@@ -19,7 +20,8 @@ pub(crate) const VISUAL_EMIT_INTERVAL_MS: u64 = 100;
 const BULK_READ_TIMEOUT_MS: u64 = 100;
 const IDLE_SLEEP_MS: u64 = 5;
 const USB_ERROR_BACKOFF_MS: u64 = 10;
-const WORKER_REPLY_TIMEOUT_MS: u64 = 1200;
+const WORKER_REPLY_TIMEOUT_MS: u64 = 2500;
+const STREAM_STATE_TIMEOUT_MS: u64 = 1000;
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct BenchStats {
@@ -71,8 +73,8 @@ impl BenchStats {
 }
 
 pub(crate) enum WorkerCommand {
-    Start,
-    Stop,
+    Start(mpsc::Sender<Result<(), String>>),
+    Stop(mpsc::Sender<Result<(), String>>),
     SetConfig(BenchmarkConfig, mpsc::Sender<Result<BenchmarkConfig, String>>),
     Disconnect,
 }
@@ -119,8 +121,10 @@ pub(crate) fn connect_device(
 
     let join = thread::spawn(move || {
         let handle = opened.handle;
-        let mut read_buffer = vec![0u8; MAX_FRAME_SIZE];
         let mut parser = FrameParser::new(initial_config);
+        // Match one logical frame per libusb read buffer. A larger read can
+        // wait for extra full-size USB packets and time out at low data rates.
+        let mut read_buffer = vec![0u8; parser.config().frame_size as usize];
         let mut stats = BenchStats::idle(true);
         let mut started_at: Option<Instant> = None;
         let mut last_emit = Instant::now();
@@ -133,12 +137,14 @@ pub(crate) fn connect_device(
         'worker: loop {
             while let Ok(command) = command_rx.try_recv() {
                 match command {
-                    WorkerCommand::Start => {
+                    WorkerCommand::Start(reply_tx) => {
+                        if stats.streaming {
+                            let _ = reply_tx.send(Err("Benchmark is already running".into()));
+                            continue;
+                        }
                         parser.reset();
                         stats = BenchStats::idle(true);
-                        stats.streaming = true;
-                        started_at = Some(Instant::now());
-                        last_emit = Instant::now();
+                        started_at = None;
                         last_visual_emit = Instant::now();
                         last_visual_sequence = None;
                         sample_bytes = 0;
@@ -155,22 +161,81 @@ pub(crate) fn connect_device(
                                 parser.config().seed
                             ),
                         );
-                        if let Err(error) = send_usb_command(&handle, CMD_RESET)
+                        let result = send_usb_command(&handle, CMD_RESET)
                             .and_then(|_| send_usb_command(&handle, CMD_START))
-                        {
-                            usb_log(&app, "error", error.clone());
-                            let _ = app.emit("bench-error", error);
-                            stats.streaming = false;
-                        } else {
-                            usb_log(&app, "debug", "EP0 reset/start commands accepted");
+                            .and_then(|_| wait_for_stream_state(&handle, true));
+                        match &result {
+                            Ok(()) => {
+                                stats.streaming = true;
+                                started_at = Some(Instant::now());
+                                last_emit = Instant::now();
+                                usb_log(&app, "debug", "firmware confirmed streaming=true");
+                            }
+                            Err(error) => {
+                                usb_log(&app, "error", error.clone());
+                                let _ = app.emit("bench-error", error.clone());
+                                // In case the command was applied but its status was lost.
+                                let _ = send_usb_command(&handle, CMD_STOP);
+                            }
                         }
+                        let _ = app.emit("bench-stats", stats.clone());
+                        let _ = reply_tx.send(result);
                     }
-                    WorkerCommand::Stop => {
-                        usb_log(&app, "info", "benchmark stop requested over EP0");
-                        if let Err(error) = send_usb_command(&handle, CMD_STOP) {
-                            let _ = app.emit("bench-error", error);
+                    WorkerCommand::Stop(reply_tx) => {
+                        if !stats.streaming {
+                            let _ = reply_tx.send(Err("Benchmark is not running".into()));
+                            continue;
                         }
-                        stats.streaming = false;
+                        usb_log(&app, "info", "benchmark stop requested over EP0");
+                        let result = send_usb_command(&handle, CMD_STOP)
+                            .and_then(|_| wait_for_stream_state(&handle, false));
+                        match &result {
+                            Ok(()) => {
+                                // USB may still have packets queued after firmware STOP.
+                                // Drain briefly so the final counters include in-flight frames.
+                                let drain_start = Instant::now();
+                                while drain_start.elapsed() < Duration::from_millis(200) {
+                                    match handle.read_bulk(
+                                        ep_in,
+                                        &mut read_buffer,
+                                        Duration::from_millis(20),
+                                    ) {
+                                        Ok(count) if count > 0 => {
+                                            stats.bytes_total += count as u64;
+                                            sample_usb_reads += 1;
+                                            sample_bytes += count as u64;
+                                            sample_frames += parser.push(&read_buffer[..count]);
+                                            stats.update_parser_stats(&parser);
+                                        }
+                                        Ok(_) | Err(rusb::Error::Timeout) => break,
+                                        Err(_) => { stats.usb_errors += 1; break; }
+                                    }
+                                }
+                                stats.streaming = false;
+                                if let Some(start) = started_at.take() {
+                                    stats.elapsed_ms = start.elapsed().as_millis() as u64;
+                                    let elapsed = stats.elapsed_ms as f64 / 1000.0;
+                                    if elapsed > 0.0 {
+                                        stats.avg_mb_per_sec =
+                                            (stats.bytes_total as f64 / 1_000_000.0) / elapsed;
+                                    }
+                                }
+                                stats.mb_per_sec = 0.0;
+                                stats.mbit_per_sec = 0.0;
+                                stats.frames_per_sec = 0.0;
+                                stats.usb_reads_per_sec = 0.0;
+                                sample_bytes = 0;
+                                sample_frames = 0;
+                                sample_usb_reads = 0;
+                                last_emit = Instant::now();
+                                let _ = app.emit("bench-stats", stats.clone());
+                            }
+                            Err(error) => {
+                                usb_log(&app, "error", error.clone());
+                                let _ = app.emit("bench-error", error.clone());
+                            }
+                        }
+                        let _ = reply_tx.send(result);
                     }
                     WorkerCommand::SetConfig(requested, reply_tx) => {
                         let result = if stats.streaming {
@@ -178,6 +243,7 @@ pub(crate) fn connect_device(
                         } else {
                             set_device_config(&handle, &capabilities, max_packet_size, &requested).map(|applied| {
                                 parser.set_config(applied.clone());
+                                read_buffer.resize(applied.frame_size as usize, 0);
                                 usb_log(
                                     &app,
                                     "info",
@@ -283,11 +349,11 @@ fn emit_visual(app: &AppHandle, visual: PayloadVisual) {
 }
 
 pub(crate) fn start_benchmark(state: &AppState) -> Result<(), String> {
-    send_simple_worker_command(state, WorkerCommand::Start)
+    send_ack_worker_command(state, WorkerCommand::Start)
 }
 
 pub(crate) fn stop_benchmark(state: &AppState) -> Result<(), String> {
-    send_simple_worker_command(state, WorkerCommand::Stop)
+    send_ack_worker_command(state, WorkerCommand::Stop)
 }
 
 pub(crate) fn set_benchmark_config(
@@ -329,7 +395,11 @@ pub(crate) fn disconnect_device(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
-fn send_simple_worker_command(state: &AppState, command: WorkerCommand) -> Result<(), String> {
+// A command completes only when its EP0 transfer and firmware status check finish.
+fn send_ack_worker_command(
+    state: &AppState,
+    command: impl FnOnce(mpsc::Sender<Result<(), String>>) -> WorkerCommand,
+) -> Result<(), String> {
     let guard = state
         .worker
         .lock()
@@ -337,9 +407,32 @@ fn send_simple_worker_command(state: &AppState, command: WorkerCommand) -> Resul
     let worker = guard
         .as_ref()
         .ok_or_else(|| "No USB device connected".to_string())?;
-
+    let (reply_tx, reply_rx) = mpsc::channel();
     worker
         .command_tx
-        .send(command)
-        .map_err(|_| "USB worker has stopped".to_string())
+        .send(command(reply_tx))
+        .map_err(|_| "USB worker has stopped".to_string())?;
+    reply_rx
+        .recv_timeout(Duration::from_millis(WORKER_REPLY_TIMEOUT_MS))
+        .map_err(|_| "Timed out waiting for USB benchmark command".to_string())?
+}
+
+fn wait_for_stream_state(
+    handle: &rusb::DeviceHandle<rusb::GlobalContext>,
+    expected: bool,
+) -> Result<(), String> {
+    let start = Instant::now();
+    let mut last_error = String::new();
+    while start.elapsed() < Duration::from_millis(STREAM_STATE_TIMEOUT_MS) {
+        match read_firmware_status(handle) {
+            Ok(status) if status.streaming == expected => return Ok(()),
+            Ok(_) => {}
+            Err(error) => last_error = error,
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    Err(format!(
+        "Firmware did not confirm streaming={expected} within {STREAM_STATE_TIMEOUT_MS} ms{}",
+        if last_error.is_empty() { String::new() } else { format!(": {last_error}") }
+    ))
 }

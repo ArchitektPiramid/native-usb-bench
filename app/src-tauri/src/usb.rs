@@ -1,6 +1,7 @@
 use crate::protocol::{
     encode_config, parse_capabilities, parse_config, parse_device_info, parse_status, BenchmarkConfig,
-    DeviceCapabilities, DeviceInfo, FirmwareStatus, CMD_PING,
+    DeviceCapabilities, DeviceInfo, FirmwareStatus, CMD_PING, HEADER_SIZE, MAX_FRAME_SIZE,
+    PROTOCOL_MAJOR,
 };
 use rusb::{Device, DeviceHandle, Direction, GlobalContext, Speed, TransferType};
 use serde::Serialize;
@@ -271,6 +272,11 @@ pub(crate) fn open_and_claim(
     let config = read_config(&handle)?;
     let status = read_firmware_status(&handle)?;
 
+    if !device_info.protocol_version.starts_with(&format!("{PROTOCOL_MAJOR}.")) {
+        return Err(format!("Unsupported NativeUSB protocol {}", device_info.protocol_version));
+    }
+    validate_config(&capabilities, bulk.max_packet_size, &config)?;
+
     if !status.configured {
         return Err(format!(
             "Firmware reports USB state {} and configured=false after interface claim.",
@@ -381,6 +387,7 @@ pub(crate) fn set_device_config(
         || applied.frame_size != requested.frame_size
         || applied.seed != requested.seed
         || applied.mode != requested.mode
+        || applied.deterministic_payload != requested.deterministic_payload
     {
         return Err(format!(
             "Firmware did not apply requested config. Requested generator={} frame={} seed=0x{:08X}; applied generator={} frame={} seed=0x{:08X}",
@@ -411,6 +418,8 @@ fn validate_config(
     }
     if config.frame_size < capabilities.min_frame_size
         || config.frame_size > capabilities.max_frame_size
+        || config.frame_size < HEADER_SIZE as u32
+        || config.frame_size > MAX_FRAME_SIZE as u32
     {
         return Err(format!(
             "Frame size {} is outside device range {}..{}",
@@ -515,7 +524,7 @@ fn read_config(handle: &DeviceHandle<GlobalContext>) -> Result<BenchmarkConfig, 
     parse_config(&data)
 }
 
-fn read_firmware_status(handle: &DeviceHandle<GlobalContext>) -> Result<FirmwareStatus, String> {
+pub(crate) fn read_firmware_status(handle: &DeviceHandle<GlobalContext>) -> Result<FirmwareStatus, String> {
     let data = read_control_blob(handle, REQ_STATUS, 48, "GET_STATUS")?;
     parse_status(&data)
 }
