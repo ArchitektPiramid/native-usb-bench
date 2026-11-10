@@ -26,6 +26,18 @@ static volatile uint32_t tx_callbacks = 0;
 static volatile uint32_t tx_errors = 0;
 static volatile int tx_last_error = 0;
 static uint32_t tx_last_progress = 0;
+// The ROM may reject or only partly accept multi-packet writes. Keep the
+// smaller working size across frames until the next USB reset.
+static uint16_t tx_chunk_limit = NUB_ROMUSB_BULK_CHUNK_BYTES;
+static uint8_t tx_fifo_busy_retries = 0;
+static uint8_t tx_timeout_checks = 0;
+
+// Halve the request while keeping it aligned to whole USB FS packets.
+void shrinkBulkChunk() {
+  const uint16_t half_packets = static_cast<uint16_t>(tx_chunk_limit / (2 * BenchConfig::kMps));
+  tx_chunk_limit = half_packets ? static_cast<uint16_t>(half_packets * BenchConfig::kMps)
+                                : BenchConfig::kMps;
+}
 // The ROM core may enumerate successfully without enabling the vendor Bulk IN EP.
 static volatile bool ep1_ready = false;
 static uint32_t ep1_last_attempt = 0;
@@ -101,7 +113,9 @@ void serviceBulkIn() {
     tx_last_progress = millis();
   }
   if (tx_inflight != 0) {
-    if (millis() - tx_last_progress > 1500) {
+    // A stalled endpoint is rare. Sample its watchdog every 16 loop passes.
+    if ((++tx_timeout_checks & 15u) == 0u &&
+        millis() - tx_last_progress > 1500) {
       ++tx_errors;
       tx_last_error = -ETIMEDOUT;
       tx_result = -1;
@@ -116,8 +130,8 @@ void serviceBulkIn() {
   }
 
   const uint32_t remaining = tx_requested - tx_offset;
-  const uint32_t requested = remaining > NUB_ROMUSB_BULK_CHUNK_BYTES
-      ? NUB_ROMUSB_BULK_CHUNK_BYTES : remaining;
+  const uint32_t requested = remaining > tx_chunk_limit
+      ? tx_chunk_limit : remaining;
   uint32_t scheduled = 0;
   // Protect ownership even if ROM invokes the completion synchronously.
   tx_inflight = static_cast<uint16_t>(requested);
@@ -127,15 +141,32 @@ void serviceBulkIn() {
     // A full FIFO may limit a write to fewer complete 64 B USB packets.
     // Only advance by bytes actually accepted, after the completion callback.
     tx_inflight = static_cast<uint16_t>(scheduled);
+    tx_fifo_busy_retries = 0;
+    if (scheduled < requested && scheduled >= BenchConfig::kMps) {
+      tx_chunk_limit = static_cast<uint16_t>(scheduled);
+    }
 #if NUB_ROMUSB_LOG_LEVEL >= 2
     ++tx_chunks;
 #endif
     tx_last_progress = millis();
+    tx_timeout_checks = 0;
     return;
   }
   tx_inflight = 0;
   if (rc == -EAGAIN || rc == -EBUSY || (rc == 0 && scheduled == 0)) {
-    return; // FIFO busy; retry without advancing the frame buffer.
+    // Fall back after repeated FIFO backpressure; never discard queued data.
+    if (++tx_fifo_busy_retries >= 8 && tx_chunk_limit > BenchConfig::kMps) {
+      shrinkBulkChunk();
+      tx_fifo_busy_retries = 0;
+    }
+    return;
+  }
+  if ((rc == -EMSGSIZE || rc == -ENOSPC || rc == -EINVAL) &&
+      tx_chunk_limit > BenchConfig::kMps) {
+    // No bytes were accepted. Retry this same offset with a smaller write.
+    shrinkBulkChunk();
+    tx_fifo_busy_retries = 0;
+    return;
   }
   ++tx_errors;
   tx_last_error = rc ? rc : -EMSGSIZE;
@@ -152,6 +183,9 @@ void resetBulkState() {
   tx_inflight = 0;
   tx_packet_done = false;
   tx_frame = nullptr;
+  tx_chunk_limit = NUB_ROMUSB_BULK_CHUNK_BYTES;
+  tx_fifo_busy_retries = 0;
+  tx_timeout_checks = 0;
   ep1_ready = false;
 }
 void invalidateBulkEndpoint() { ep1_ready = false; }
@@ -200,9 +234,13 @@ bool startBulkIn(uint8_t* frame, uint16_t size) {
   tx_requested = size;
   tx_offset = 0;
   tx_inflight = 0;
+  tx_timeout_checks = 0;
   tx_frame = frame;
   tx_last_progress = millis();
   ++bulk_in_count;
+  // Submit the first DCD write before returning to the Arduino loop.
+  // Never schedule ROM DCD operations directly inside its USB ISR.
+  serviceBulkIn();
   return true;
 }
 bool pollBulkIn(bool* completed) {

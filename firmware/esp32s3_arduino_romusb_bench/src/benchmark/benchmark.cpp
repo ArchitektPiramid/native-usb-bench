@@ -124,6 +124,14 @@ void tick() {
   }
   processCommands();
   pump();
-  delay(0);
+  if (!streaming) {
+    delay(1); // Let FreeRTOS schedule idle work.
+  } else {
+    static uint16_t since_yield = 0;
+    if (++since_yield >= NUB_ROMUSB_LOOP_YIELD_EVERY) {
+      since_yield = 0;
+      delay(0); // Cooperate with FreeRTOS without yielding on every packet.
+    }
+  }
 }
 } // namespace Bench

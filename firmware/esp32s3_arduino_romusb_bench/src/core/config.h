@@ -13,7 +13,7 @@ constexpr uint16_t kTargetId = 0x3203;
 constexpr uint16_t kMcuWireId = 0x0003;
 constexpr uint8_t kFirmwareMajor = 0;
 constexpr uint8_t kFirmwareMinor = 1;
-constexpr uint8_t kFirmwarePatch = 0;
+constexpr uint8_t kFirmwarePatch = 1;
 constexpr uint16_t kMps = 64;
 constexpr uint32_t kMaxFrameSize = 16384;
 constexpr uint32_t kDefaultFrameSize = 4096;
@@ -37,9 +37,14 @@ constexpr const char* kBoard = "";
 #ifndef NUB_ROMUSB_LOG_LEVEL
 #define NUB_ROMUSB_LOG_LEVEL 0
 #endif
-// Bytes scheduled per Bulk IN write; 64 is the on-device tested baseline.
+// Yield periodically during sustained streaming instead of after every loop.
+#ifndef NUB_ROMUSB_LOOP_YIELD_EVERY
+#define NUB_ROMUSB_LOOP_YIELD_EVERY 64
+#endif
+static_assert(NUB_ROMUSB_LOOP_YIELD_EVERY >= 1, "yield interval must be positive");
+// Requested Bulk IN write size (64 B is the known-good fallback).
 #ifndef NUB_ROMUSB_BULK_CHUNK_BYTES
-#define NUB_ROMUSB_BULK_CHUNK_BYTES 64
+#define NUB_ROMUSB_BULK_CHUNK_BYTES 256
 #endif
 static_assert(NUB_ROMUSB_BULK_CHUNK_BYTES >= BenchConfig::kMps &&
               NUB_ROMUSB_BULK_CHUNK_BYTES <= 4096 &&
