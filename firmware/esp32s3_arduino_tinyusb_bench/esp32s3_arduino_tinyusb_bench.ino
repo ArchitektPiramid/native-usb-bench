@@ -20,7 +20,7 @@
 
 #include "config.h"
 #include "nativeusb_protocol.h"
-#include "payload_generators.h"
+#include "src/generators/generators.h"
 #include "usb_transport.h"
 
 namespace Bench {

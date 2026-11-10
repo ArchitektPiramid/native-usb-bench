@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Move ESP32-S3 payload generators into separate firmware modules.
+
 - Pipeline ESP32-S3 Bulk IN using two buffers and non-blocking transfers.
 
 - Split ESP32-S3 descriptors, EP0 handling and Bulk transfers.
