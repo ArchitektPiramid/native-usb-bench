@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <cstring>
 #include "../core/config.h"
+#include "../core/rom_usb_profile.h"
 #include "../generators/generators.h"
 #include "../usb/rom_usb.h"
 
@@ -56,6 +57,9 @@ void processCommands() {
 }
 
 void makeFrame(uint8_t* dst, const NativeUsbProtocol::BenchmarkConfig& cfg) {
+#if NUB_ROMUSB_PROFILE
+  const uint32_t frame_started = RomUsbProfile::cycles();
+#endif
   const uint32_t payload = cfg.frame_size - NativeUsbProtocol::kFrameHeaderSize;
   memcpy(dst, NativeUsbProtocol::kFrameMagic, 4);
   dst[4] = NativeUsbProtocol::kProtocolMajor;
@@ -64,6 +68,9 @@ void makeFrame(uint8_t* dst, const NativeUsbProtocol::BenchmarkConfig& cfg) {
   NativeUsbProtocol::putU32LE(dst + 8, sequence++);
   NativeUsbProtocol::putU32LE(dst + 12, payload);
   PayloadGenerators::fill(dst + 16, payload, cfg.generator, cfg.seed, sequence - 1);
+#if NUB_ROMUSB_PROFILE
+  RomUsbProfile::recordFrame(RomUsbProfile::cycles() - frame_started);
+#endif
   ++generated;
 }
 
@@ -104,7 +111,7 @@ void pump() {
 } // namespace
 
 void begin() {
-#if NUB_ROMUSB_LOG_LEVEL >= 1
+#if NUB_ROMUSB_LOG_LEVEL >= 1 || NUB_ROMUSB_PROFILE
   Serial.begin(115200);  // Logs only over USB-UART, never native USB CDC.
 #endif
   const bool started = RomUsb::begin();
@@ -124,13 +131,16 @@ void tick() {
   }
   processCommands();
   pump();
+#if NUB_ROMUSB_PROFILE
+  RomUsbProfile::report();
+#endif
   if (!streaming) {
-    delay(1); // Let FreeRTOS schedule idle work.
+    delay(1);  // Avoid spinning when no benchmark is running.
   } else {
     static uint16_t since_yield = 0;
     if (++since_yield >= NUB_ROMUSB_LOOP_YIELD_EVERY) {
       since_yield = 0;
-      delay(0); // Cooperate with FreeRTOS without yielding on every packet.
+      delay(0);  // Cooperate with FreeRTOS without yielding on every packet.
     }
   }
 }

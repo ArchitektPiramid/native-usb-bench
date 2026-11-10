@@ -37,6 +37,14 @@ constexpr const char* kBoard = "";
 #ifndef NUB_ROMUSB_LOG_LEVEL
 #define NUB_ROMUSB_LOG_LEVEL 0
 #endif
+// 0: remove all profiler code from the firmware; 1: periodic UART summary.
+#ifndef NUB_ROMUSB_PROFILE
+#define NUB_ROMUSB_PROFILE 1
+#endif
+#ifndef NUB_ROMUSB_PROFILE_INTERVAL_MS
+#define NUB_ROMUSB_PROFILE_INTERVAL_MS 5000
+#endif
+static_assert(NUB_ROMUSB_PROFILE_INTERVAL_MS >= 1000, "profiler reporting interval must be >= 1 second");
 // Yield periodically during sustained streaming instead of after every loop.
 #ifndef NUB_ROMUSB_LOOP_YIELD_EVERY
 #define NUB_ROMUSB_LOOP_YIELD_EVERY 64

@@ -4,6 +4,7 @@
 #include <cerrno>
 #include "../core/config.h"
 #include "hal/usb_dwc_ll.h"
+#include "../core/rom_usb_profile.h"
 
 namespace RomUsb {
 namespace Internal {
@@ -30,7 +31,6 @@ static uint32_t tx_last_progress = 0;
 // smaller working size across frames until the next USB reset.
 static uint16_t tx_chunk_limit = NUB_ROMUSB_BULK_CHUNK_BYTES;
 static uint8_t tx_fifo_busy_retries = 0;
-static uint8_t tx_timeout_checks = 0;
 
 // Halve the request while keeping it aligned to whole USB FS packets.
 void shrinkBulkChunk() {
@@ -38,6 +38,7 @@ void shrinkBulkChunk() {
   tx_chunk_limit = half_packets ? static_cast<uint16_t>(half_packets * BenchConfig::kMps)
                                 : BenchConfig::kMps;
 }
+static uint8_t tx_timeout_checks = 0;
 // The ROM core may enumerate successfully without enabling the vendor Bulk IN EP.
 static volatile bool ep1_ready = false;
 static uint32_t ep1_last_attempt = 0;
@@ -57,7 +58,12 @@ void inCallback(uint8_t ep, usb_dc_ep_cb_status_code status) {
 #if NUB_ROMUSB_LOG_LEVEL >= 2
   ++tx_callbacks;
 #endif
-  if (tx_busy && tx_inflight != 0) tx_packet_done = true;
+  if (tx_busy && tx_inflight != 0) {
+#if NUB_ROMUSB_PROFILE
+    RomUsbProfile::callbackFromIsr();
+#endif
+    tx_packet_done = true;
+  }
 }
 
 // Activate EP1 only after Windows has selected configuration 1. Keep the ROM
@@ -108,12 +114,16 @@ void serviceBulkIn() {
 
   if (tx_packet_done) {
     tx_packet_done = false;
+#if NUB_ROMUSB_PROFILE
+    RomUsbProfile::callbackServiced();
+#endif
     tx_offset = static_cast<uint16_t>(tx_offset + tx_inflight);
     tx_inflight = 0;
     tx_last_progress = millis();
   }
   if (tx_inflight != 0) {
-    // A stalled endpoint is rare. Sample its watchdog every 16 loop passes.
+    // A stalled endpoint is rare. Sample its watchdog every 16 loop passes
+    // instead of reading the system clock on each busy poll.
     if ((++tx_timeout_checks & 15u) == 0u &&
         millis() - tx_last_progress > 1500) {
       ++tx_errors;
@@ -135,7 +145,14 @@ void serviceBulkIn() {
   uint32_t scheduled = 0;
   // Protect ownership even if ROM invokes the completion synchronously.
   tx_inflight = static_cast<uint16_t>(requested);
+#if NUB_ROMUSB_PROFILE
+  const uint32_t write_started = RomUsbProfile::cycles();
+#endif
   const int rc = usb_dc_ep_write(kEpIn, tx_frame + tx_offset, requested, &scheduled);
+#if NUB_ROMUSB_PROFILE
+  RomUsbProfile::recordWrite(RomUsbProfile::cycles() - write_started,
+                             requested, scheduled, rc);
+#endif
   if (rc == 0 && scheduled > 0 && scheduled <= requested &&
       scheduled % BenchConfig::kMps == 0) {
     // A full FIFO may limit a write to fewer complete 64 B USB packets.
@@ -238,8 +255,8 @@ bool startBulkIn(uint8_t* frame, uint16_t size) {
   tx_frame = frame;
   tx_last_progress = millis();
   ++bulk_in_count;
-  // Submit the first DCD write before returning to the Arduino loop.
-  // Never schedule ROM DCD operations directly inside its USB ISR.
+  // Queue the first DCD write now, not after another full Arduino loop.
+  // Do not call usb_dc_ep_write() from the ROM interrupt callback.
   serviceBulkIn();
   return true;
 }
