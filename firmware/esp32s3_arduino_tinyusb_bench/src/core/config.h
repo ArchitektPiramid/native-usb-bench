@@ -43,10 +43,11 @@ constexpr uint8_t kFirmwarePatch = 0;
 // ESP32-S3 native USB is USB Full-Speed, so Bulk MPS is 64 B.
 constexpr uint16_t kUsbMaxPacket = 64;
 
-// Keep the S3 first target conservative and use the already-proven 4 KiB
-// direct DCD transfer size as the maximum logical benchmark frame.
+// Keep each DCD submission at the proven 4 KiB size. Larger NUB1 frames
+// are sent as consecutive Bulk IN chunks without changing the wire format.
 constexpr uint32_t kMinFrameSize = 64;
-constexpr uint32_t kMaxFrameSize = 4096;
+constexpr uint32_t kMaxFrameSize = 16384;
+constexpr uint16_t kDcdTransferSize = 4096;
 constexpr uint32_t kDefaultFrameSize = 4096;
 constexpr NativeUsbProtocol::PayloadGenerator kDefaultGenerator =
     NativeUsbProtocol::PayloadGenerator::Xorshift32;
@@ -58,7 +59,9 @@ constexpr size_t kCommandQueueSize = 8;
 static_assert(kMinFrameSize >= NativeUsbProtocol::kFrameHeaderSize,
               "frame too small");
 static_assert(kMaxFrameSize <= 0xFFFFu,
-              "TinyUSB DCD transfer length must fit uint16_t");
+              "NUB1 frame length must fit uint16_t");
+static_assert((kDcdTransferSize % kUsbMaxPacket) == 0,
+              "DCD chunks must contain whole Full-Speed Bulk packets");
 static_assert((kDefaultFrameSize % kUsbMaxPacket) == 0,
               "default frame must align to Full-Speed Bulk packet size");
 

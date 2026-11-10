@@ -15,6 +15,10 @@ uint8_t g_vendor_bulk_in_endpoint = 0;
 uint8_t g_vendor_bulk_out_endpoint = 0;
 bool g_vendor_mounted_last_loop = false;
 bool g_tx_in_flight = false;
+bool g_chunk_pending_completion = false;
+const uint8_t* g_tx_frame = nullptr;
+uint16_t g_tx_frame_size = 0;
+uint16_t g_tx_offset = 0;
 bool g_tx_timed_out = false;
 uint32_t g_tx_started_ms = 0;
 volatile uint32_t g_bulk_in_transfers = 0;
@@ -62,10 +66,10 @@ bool discoverVendorBulkEndpoints() {
   return g_vendor_bulk_in_endpoint != 0 && g_vendor_bulk_out_endpoint != 0;
 }
 
-// Submit one frame; TinyUSB keeps the buffer until the endpoint becomes idle.
-bool submitBulkIn(const uint8_t* data, size_t size) {
-  if (!vendor.mounted() || data == nullptr || size == 0 || size > 0xFFFFu ||
-      !discoverVendorBulkEndpoints() || g_tx_in_flight ||
+// Submit one DCD chunk; its source buffer must remain alive until completion.
+bool submitBulkChunk(const uint8_t* data, uint16_t size) {
+  if (!vendor.mounted() || data == nullptr || size == 0 ||
+      !discoverVendorBulkEndpoints() ||
       usbd_edpt_busy(0, g_vendor_bulk_in_endpoint) ||
       !usbd_edpt_claim(0, g_vendor_bulk_in_endpoint)) {
     return false;
@@ -76,9 +80,8 @@ bool submitBulkIn(const uint8_t* data, size_t size) {
     return false;
   }
 
-  g_tx_in_flight = true;
-  g_tx_timed_out = false;
   g_tx_started_ms = millis();
+  g_chunk_pending_completion = true;
   return true;
 }
 
@@ -144,10 +147,13 @@ BulkInState pollBulkIn() {
   }
   if (!vendor.mounted()) {
     g_tx_in_flight = false;
+    g_chunk_pending_completion = false;
+    g_tx_frame = nullptr;
     return BulkInState::Failed;
   }
+
   if (usbd_edpt_busy(0, g_vendor_bulk_in_endpoint)) {
-    // Do not reuse a timed-out buffer while the controller still owns it.
+    // Keep the active frame locked even if the controller is slow.
     if (static_cast<uint32_t>(millis() - g_tx_started_ms) >=
         BenchConfig::kUsbWriteTimeoutMs) {
       g_tx_timed_out = true;
@@ -155,11 +161,35 @@ BulkInState pollBulkIn() {
     return BulkInState::Pending;
   }
 
-  g_tx_in_flight = false;
+  if (g_chunk_pending_completion) {
+    g_chunk_pending_completion = false;
+    ++g_bulk_in_transfers;  // Count finished DCD submissions, not NUB1 frames.
+  }
+
   if (g_tx_timed_out) {
+    g_tx_in_flight = false;
+    g_tx_frame = nullptr;
     return BulkInState::Failed;
   }
-  ++g_bulk_in_transfers;
+
+  if (g_tx_offset < g_tx_frame_size) {
+    const uint16_t remaining = g_tx_frame_size - g_tx_offset;
+    const uint16_t next_size = remaining < BenchConfig::kDcdTransferSize
+                                   ? remaining : BenchConfig::kDcdTransferSize;
+    // A 16 KiB NUB1 frame is four contiguous 4 KiB DCD submissions.
+    if (submitBulkChunk(g_tx_frame + g_tx_offset, next_size)) {
+      g_tx_offset += next_size;
+    } else if (static_cast<uint32_t>(millis() - g_tx_started_ms) >=
+               BenchConfig::kUsbWriteTimeoutMs) {
+      g_tx_in_flight = false;
+      g_tx_frame = nullptr;
+      return BulkInState::Failed;
+    }
+    return BulkInState::Pending;
+  }
+
+  g_tx_in_flight = false;
+  g_tx_frame = nullptr;
   return BulkInState::Completed;
 }
 
@@ -171,12 +201,24 @@ bool txBusy() {
 }
 
 bool writeFrame(const uint8_t* data, uint16_t length) {
-  if (length < NativeUsbProtocol::kFrameHeaderSize ||
+  if (data == nullptr || length < NativeUsbProtocol::kFrameHeaderSize ||
       length > BenchConfig::kMaxFrameSize ||
-      (length % BenchConfig::kUsbMaxPacket) != 0) {
+      (length % BenchConfig::kUsbMaxPacket) != 0 || g_tx_in_flight) {
     return false;
   }
-  return submitBulkIn(data, length);
+
+  const uint16_t first_size = length < BenchConfig::kDcdTransferSize
+                                  ? length : BenchConfig::kDcdTransferSize;
+  if (!submitBulkChunk(data, first_size)) {
+    return false;
+  }
+
+  g_tx_frame = data;
+  g_tx_frame_size = length;
+  g_tx_offset = first_size;
+  g_tx_in_flight = true;
+  g_tx_timed_out = false;
+  return true;
 }
 
 }  // namespace NativeUsbEsp32

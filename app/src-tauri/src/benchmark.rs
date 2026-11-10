@@ -18,6 +18,7 @@ use tauri::{AppHandle, Emitter};
 pub(crate) const STATS_EMIT_INTERVAL_MS: u64 = 250;
 pub(crate) const VISUAL_EMIT_INTERVAL_MS: u64 = 100;
 const BULK_READ_TIMEOUT_MS: u64 = 100;
+const BULK_READ_CHUNK_SIZE: usize = 4096;
 const IDLE_SLEEP_MS: u64 = 5;
 const USB_ERROR_BACKOFF_MS: u64 = 10;
 const WORKER_REPLY_TIMEOUT_MS: u64 = 2500;
@@ -123,9 +124,8 @@ pub(crate) fn connect_device(
     let join = thread::spawn(move || {
         let handle = opened.handle;
         let mut parser = FrameParser::new(initial_config);
-        // Match one logical frame per libusb read buffer. A larger read can
-        // wait for extra full-size USB packets and time out at low data rates.
-        let mut read_buffer = vec![0u8; parser.config().frame_size as usize];
+        // Read at most one DCD chunk; the parser reassembles larger NUB1 frames.
+        let mut read_buffer = vec![0u8; (parser.config().frame_size as usize).min(BULK_READ_CHUNK_SIZE)];
         let mut stats = BenchStats::idle(true);
         let mut started_at: Option<Instant> = None;
         let mut last_emit = Instant::now();
@@ -247,7 +247,7 @@ pub(crate) fn connect_device(
                         } else {
                             set_device_config(&handle, &capabilities, max_packet_size, &requested).map(|applied| {
                                 parser.set_config(applied.clone());
-                                read_buffer.resize(applied.frame_size as usize, 0);
+                                read_buffer.resize((applied.frame_size as usize).min(BULK_READ_CHUNK_SIZE), 0);
                                 usb_log(
                                     &app,
                                     "info",

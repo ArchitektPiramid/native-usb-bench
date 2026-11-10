@@ -15,6 +15,7 @@ type StreamPanelProps = {
   processCpuUsage: number | null;
   history: number[];
   onGeneratorChange: (generator: number) => void;
+  onFrameSizeChange: (frameSize: number) => void;
   onStart: () => void;
   onStop: () => void;
 };
@@ -50,12 +51,21 @@ export function StreamPanel({
   processCpuUsage,
   history,
   onGeneratorChange,
+  onFrameSizeChange,
   onStart,
   onStop,
 }: StreamPanelProps) {
   const availableGenerators = GENERATORS.filter(
     (generator) => !capabilities || (capabilities.generator_mask & (1 << generator.id)) !== 0,
   );
+
+  const frameSizes = [4096, 8192, 16384].filter(
+    (size) => capabilities && size >= capabilities.min_frame_size && size <= capabilities.max_frame_size,
+  );
+  // Always keep the firmware's current size selectable, even on older targets.
+  if (config && !frameSizes.includes(config.frame_size)) {
+    frameSizes.unshift(config.frame_size);
+  }
 
   const nominalRateMbit = nominalUsbRateMbit(usbSpeed);
   const nominalLinkUsage =
@@ -98,6 +108,20 @@ export function StreamPanel({
             {availableGenerators.map((generator) => (
               <option key={generator.id} value={generator.id}>
                 {generator.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="stream-generator-control">
+          <span>Frame size</span>
+          <select
+            value={config?.frame_size ?? 4096}
+            disabled={!connected || streaming || busy || !config || !capabilities?.configurable_frame_size}
+            onChange={(event: ChangeEvent<HTMLSelectElement>) => onFrameSizeChange(Number(event.target.value))}
+          >
+            {frameSizes.map((size) => (
+              <option key={size} value={size}>
+                {size / 1024} KiB
               </option>
             ))}
           </select>

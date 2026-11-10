@@ -497,7 +497,7 @@ select {
 
 .stream-controls {
   display: grid;
-  grid-template-columns: 76px 76px minmax(0, 1fr);
+  grid-template-columns: 66px 66px minmax(0, 1fr) 88px;
   gap: 7px;
   align-items: end;
   margin-bottom: 7px;
@@ -777,6 +777,6 @@ select {
   }
 
   .stream-generator-control {
-    grid-column: 1 / -1;
+    grid-column: auto;
   }
 }

@@ -51,6 +51,7 @@ export default function App() {
             processCpuUsage={bench.processCpuUsage}
             history={bench.history}
             onGeneratorChange={(generator) => void bench.setGenerator(generator)}
+            onFrameSizeChange={(frameSize) => void bench.setFrameSize(frameSize)}
             onStart={() => void bench.startBenchmark()}
             onStop={() => void bench.stopBenchmark()}
           />

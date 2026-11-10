@@ -142,6 +142,15 @@ export function useNativeUsbBench() {
     [addLocalLog, config, updateConfig],
   );
 
+  const setFrameSize = useCallback(
+    async (frameSize: number) => {
+      if (!config || config.frame_size === frameSize) return;
+      addLocalLog("info", `set frame size ${frameSize} B`);
+      await updateConfig({ ...config, frame_size: frameSize });
+    },
+    [addLocalLog, config, updateConfig],
+  );
+
   const startBenchmark = useCallback(async () => {
     if (!connected || busy || stats.streaming) return;
 
@@ -313,6 +322,7 @@ export function useNativeUsbBench() {
     connect,
     disconnect,
     setGenerator,
+    setFrameSize,
     startBenchmark,
     stopBenchmark,
     clearLogs,
