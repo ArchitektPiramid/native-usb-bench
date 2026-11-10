@@ -13,7 +13,7 @@ constexpr uint16_t kTargetId = 0x3203;
 constexpr uint16_t kMcuWireId = 0x0003;
 constexpr uint8_t kFirmwareMajor = 0;
 constexpr uint8_t kFirmwareMinor = 1;
-constexpr uint8_t kFirmwarePatch = 1;
+constexpr uint8_t kFirmwarePatch = 2;
 constexpr uint16_t kMps = 64;
 constexpr uint32_t kMaxFrameSize = 16384;
 constexpr uint32_t kDefaultFrameSize = 4096;
@@ -39,22 +39,16 @@ constexpr const char* kBoard = "";
 #endif
 // 0: remove all profiler code from the firmware; 1: periodic UART summary.
 #ifndef NUB_ROMUSB_PROFILE
-#define NUB_ROMUSB_PROFILE 1
+#define NUB_ROMUSB_PROFILE 0
 #endif
 #ifndef NUB_ROMUSB_PROFILE_INTERVAL_MS
 #define NUB_ROMUSB_PROFILE_INTERVAL_MS 5000
 #endif
 static_assert(NUB_ROMUSB_PROFILE_INTERVAL_MS >= 1000, "profiler reporting interval must be >= 1 second");
-// Yield periodically during sustained streaming instead of after every loop.
-#ifndef NUB_ROMUSB_LOOP_YIELD_EVERY
-#define NUB_ROMUSB_LOOP_YIELD_EVERY 64
+// Compile-time options shared by separately compiled Arduino .cpp files.
+// Transfer size and yield interval are instead selected in the sketch .ino.
+#ifndef NUB_ROMUSB_IRAM_IN_CALLBACK
+#define NUB_ROMUSB_IRAM_IN_CALLBACK 1
 #endif
-static_assert(NUB_ROMUSB_LOOP_YIELD_EVERY >= 1, "yield interval must be positive");
-// Requested Bulk IN write size (64 B is the known-good fallback).
-#ifndef NUB_ROMUSB_BULK_CHUNK_BYTES
-#define NUB_ROMUSB_BULK_CHUNK_BYTES 256
-#endif
-static_assert(NUB_ROMUSB_BULK_CHUNK_BYTES >= BenchConfig::kMps &&
-              NUB_ROMUSB_BULK_CHUNK_BYTES <= 4096 &&
-              NUB_ROMUSB_BULK_CHUNK_BYTES % BenchConfig::kMps == 0,
-              "ROM USB chunk size must be 64..4096 bytes, in multiples of 64");
+static_assert(NUB_ROMUSB_IRAM_IN_CALLBACK == 0 || NUB_ROMUSB_IRAM_IN_CALLBACK == 1,
+              "IRAM callback option must be 0 or 1");

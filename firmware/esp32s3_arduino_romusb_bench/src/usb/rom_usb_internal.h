@@ -20,6 +20,7 @@ void resetBulkState();
 void invalidateBulkEndpoint();
 bool ensureBulkInEndpoint();
 void serviceBulkIn();
+void setFixedBulkWriteSize(uint16_t bytes);
 void bulkDiagnosticTick();
 bool bulkBusy();
 uint32_t bulkInCount();

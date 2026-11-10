@@ -4,6 +4,7 @@
 #include <cerrno>
 #include "../core/config.h"
 #include "hal/usb_dwc_ll.h"
+#include "esp_attr.h"
 #include "../core/rom_usb_profile.h"
 
 namespace RomUsb {
@@ -27,23 +28,33 @@ static volatile uint32_t tx_callbacks = 0;
 static volatile uint32_t tx_errors = 0;
 static volatile int tx_last_error = 0;
 static uint32_t tx_last_progress = 0;
-// The ROM may reject or only partly accept multi-packet writes. Keep the
-// smaller working size across frames until the next USB reset.
-static uint16_t tx_chunk_limit = NUB_ROMUSB_BULK_CHUNK_BYTES;
-static uint8_t tx_fifo_busy_retries = 0;
-
-// Halve the request while keeping it aligned to whole USB FS packets.
-void shrinkBulkChunk() {
-  const uint16_t half_packets = static_cast<uint16_t>(tx_chunk_limit / (2 * BenchConfig::kMps));
-  tx_chunk_limit = half_packets ? static_cast<uint16_t>(half_packets * BenchConfig::kMps)
-                                : BenchConfig::kMps;
-}
+// The watchdog samples time only occasionally; ISR-completion is a progress flag.
+static bool tx_progress_since_check = false;
+// Chosen once from the sketch; partial writes are handled without changing this limit.
+static uint16_t tx_chunk_bytes = static_cast<uint16_t>(BulkWriteSize::Bytes64);
 static uint8_t tx_timeout_checks = 0;
 // The ROM core may enumerate successfully without enabling the vendor Bulk IN EP.
 static volatile bool ep1_ready = false;
 static uint32_t ep1_last_attempt = 0;
 static uint32_t bulk_in_count = 0;
 static uint32_t bulk_out_count = 0;
+
+// A single low-rate watchdog covers in-flight transfers and a busy FIFO.
+bool bulkWatchdogExpired() {
+  if ((++tx_timeout_checks & 63u) != 0u) return false;
+  const uint32_t now = millis();
+  if (tx_progress_since_check) {
+    tx_progress_since_check = false;
+    tx_last_progress = now;
+    return false;
+  }
+  if (now - tx_last_progress <= 1500u) return false;
+  ++tx_errors;
+  tx_last_error = -ETIMEDOUT;
+  tx_result = -1;
+  tx_done = true;
+  return true;
+}
 
 } // namespace
 
@@ -52,7 +63,13 @@ void outCallback(uint8_t ep, usb_dc_ep_cb_status_code status) {
   uint32_t length = 0;
   if (usb_dc_ep_read(ep, out_packet, sizeof(out_packet), &length) == 0) ++bulk_out_count;
 }
+// Only this small callback is placed in IRAM; the ROM ISR chain is NOT IRAM-safe.
+// Do not add ESP_INTR_FLAG_IRAM without auditing the entire ROM call graph.
+#if NUB_ROMUSB_IRAM_IN_CALLBACK
+void IRAM_ATTR inCallback(uint8_t ep, usb_dc_ep_cb_status_code status) {
+#else
 void inCallback(uint8_t ep, usb_dc_ep_cb_status_code status) {
+#endif
   // Accept the address or the index for ROM versions that omit direction.
   if ((ep != kEpIn && ep != (kEpIn & 0x0Fu)) || status != USB_DC_EP_DATA_IN) return;
 #if NUB_ROMUSB_LOG_LEVEL >= 2
@@ -119,18 +136,11 @@ void serviceBulkIn() {
 #endif
     tx_offset = static_cast<uint16_t>(tx_offset + tx_inflight);
     tx_inflight = 0;
-    tx_last_progress = millis();
+    tx_progress_since_check = true;
   }
   if (tx_inflight != 0) {
-    // A stalled endpoint is rare. Sample its watchdog every 16 loop passes
-    // instead of reading the system clock on each busy poll.
-    if ((++tx_timeout_checks & 15u) == 0u &&
-        millis() - tx_last_progress > 1500) {
-      ++tx_errors;
-      tx_last_error = -ETIMEDOUT;
-      tx_result = -1;
-      tx_done = true;
-    }
+    // Callback progress refreshes the deadline without per-packet millis().
+    bulkWatchdogExpired();
     return;
   }
   if (tx_offset == tx_requested) {
@@ -140,8 +150,8 @@ void serviceBulkIn() {
   }
 
   const uint32_t remaining = tx_requested - tx_offset;
-  const uint32_t requested = remaining > tx_chunk_limit
-      ? tx_chunk_limit : remaining;
+  const uint32_t requested = remaining > tx_chunk_bytes
+      ? tx_chunk_bytes : remaining;
   uint32_t scheduled = 0;
   // Protect ownership even if ROM invokes the completion synchronously.
   tx_inflight = static_cast<uint16_t>(requested);
@@ -158,39 +168,39 @@ void serviceBulkIn() {
     // A full FIFO may limit a write to fewer complete 64 B USB packets.
     // Only advance by bytes actually accepted, after the completion callback.
     tx_inflight = static_cast<uint16_t>(scheduled);
-    tx_fifo_busy_retries = 0;
-    if (scheduled < requested && scheduled >= BenchConfig::kMps) {
-      tx_chunk_limit = static_cast<uint16_t>(scheduled);
-    }
+    // Even a partial write owns exactly `scheduled` bytes until its callback.
 #if NUB_ROMUSB_LOG_LEVEL >= 2
     ++tx_chunks;
 #endif
-    tx_last_progress = millis();
-    tx_timeout_checks = 0;
     return;
   }
   tx_inflight = 0;
   if (rc == -EAGAIN || rc == -EBUSY || (rc == 0 && scheduled == 0)) {
-    // Fall back after repeated FIFO backpressure; never discard queued data.
-    if (++tx_fifo_busy_retries >= 8 && tx_chunk_limit > BenchConfig::kMps) {
-      shrinkBulkChunk();
-      tx_fifo_busy_retries = 0;
-    }
+    // Transient backpressure: retry the same offset and fixed chunk next tick.
+    // Treat a permanently busy FIFO as a timeout, not an endless spin.
+    bulkWatchdogExpired();
     return;
   }
-  if ((rc == -EMSGSIZE || rc == -ENOSPC || rc == -EINVAL) &&
-      tx_chunk_limit > BenchConfig::kMps) {
-    // No bytes were accepted. Retry this same offset with a smaller write.
-    shrinkBulkChunk();
-    tx_fifo_busy_retries = 0;
-    return;
-  }
+  // No size fallback: a rejected large request is a visible experiment failure.
+
   ++tx_errors;
   tx_last_error = rc ? rc : -EMSGSIZE;
   tx_result = -1;
   tx_done = true;
 }
 
+
+// The bulk write size changes only before streaming, never as a reaction to FIFO pressure.
+void setFixedBulkWriteSize(uint16_t bytes) {
+  switch (bytes) {
+    case 64: case 128: case 256: case 512: case 1024: case 2048: case 4096:
+      tx_chunk_bytes = bytes;
+      break;
+    default:
+      tx_chunk_bytes = 64;
+      break;
+  }
+}
 
 // Reset stale transfer ownership when the host resets or disconnects.
 void resetBulkState() {
@@ -200,9 +210,8 @@ void resetBulkState() {
   tx_inflight = 0;
   tx_packet_done = false;
   tx_frame = nullptr;
-  tx_chunk_limit = NUB_ROMUSB_BULK_CHUNK_BYTES;
-  tx_fifo_busy_retries = 0;
   tx_timeout_checks = 0;
+  tx_progress_since_check = false;
   ep1_ready = false;
 }
 void invalidateBulkEndpoint() { ep1_ready = false; }
@@ -235,6 +244,13 @@ void bulkDiagnosticTick() {
 }
 } // namespace Internal
 
+void setBulkWriteSize(BulkWriteSize size) {
+  // Typed options from the sketch prevent unaligned USB FS write sizes.
+  if (!Internal::bulkBusy()) {
+    Internal::setFixedBulkWriteSize(static_cast<uint16_t>(size));
+  }
+}
+
 bool startBulkIn(uint8_t* frame, uint16_t size) {
   using namespace Internal;
   if (!configured() || tx_busy || !frame || size == 0 || !ensureBulkInEndpoint()) return false;
@@ -252,6 +268,7 @@ bool startBulkIn(uint8_t* frame, uint16_t size) {
   tx_offset = 0;
   tx_inflight = 0;
   tx_timeout_checks = 0;
+  tx_progress_since_check = false;
   tx_frame = frame;
   tx_last_progress = millis();
   ++bulk_in_count;

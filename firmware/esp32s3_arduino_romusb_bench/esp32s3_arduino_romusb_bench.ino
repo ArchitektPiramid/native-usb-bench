@@ -11,5 +11,15 @@
 #endif
 
 #include "src/benchmark/benchmark.h"
-void setup() { Bench::begin(); }
+
+// User settings: choose a named ROM DCD write size. 64 B is the known-good baseline.
+// Larger sizes are experimental and deliberately have NO automatic fallback.
+#define NUB_BULK_WRITE_SIZE RomUsb::BulkWriteSize::Bytes1024
+#define NUB_LOOP_YIELD_EVERY 64
+
+// For compile-time diagnostics/IRAM choices, edit src/core/config.h;
+// .ino-only #defines are not visible to separately compiled .cpp modules.
+void setup() {
+  Bench::begin({NUB_BULK_WRITE_SIZE, NUB_LOOP_YIELD_EVERY});
+}
 void loop() { Bench::tick(); }

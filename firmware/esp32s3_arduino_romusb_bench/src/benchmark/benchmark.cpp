@@ -21,6 +21,7 @@ uint32_t generated = 0;
 uint32_t sent = 0;
 uint32_t dropped = 0;
 uint64_t bytes = 0;
+uint16_t yield_interval = 64;
 
 void publish() {
   RomUsb::setRuntime({streaming, generated, sent, dropped, bytes});
@@ -110,7 +111,10 @@ void pump() {
 }
 } // namespace
 
-void begin() {
+void begin(Options options) {
+  // Sketch settings are passed explicitly: .ino macros cannot configure separate .cpp files.
+  RomUsb::setBulkWriteSize(options.bulk_write_size);
+  yield_interval = options.loop_yield_every ? options.loop_yield_every : 1;
 #if NUB_ROMUSB_LOG_LEVEL >= 1 || NUB_ROMUSB_PROFILE
   Serial.begin(115200);  // Logs only over USB-UART, never native USB CDC.
 #endif
@@ -138,7 +142,7 @@ void tick() {
     delay(1);  // Avoid spinning when no benchmark is running.
   } else {
     static uint16_t since_yield = 0;
-    if (++since_yield >= NUB_ROMUSB_LOOP_YIELD_EVERY) {
+    if (++since_yield >= yield_interval) {
       since_yield = 0;
       delay(0);  // Cooperate with FreeRTOS without yielding on every packet.
     }
