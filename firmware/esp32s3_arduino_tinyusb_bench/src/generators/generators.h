@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../../nativeusb_protocol.h"
+#include "../protocol/nativeusb_protocol.h"
 #include "ramp8.h"
 #include "xorshift32.h"
 #include "lfsr32.h"

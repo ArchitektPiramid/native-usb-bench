@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 
-#include "nativeusb_protocol.h"
+#include "../protocol/nativeusb_protocol.h"
 
 namespace NativeUsbEsp32 {
 

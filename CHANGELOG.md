@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Organize ESP32-S3 firmware into benchmark, USB, protocol and core modules.
+
 - Speed up full-word ESP32-S3 generator writes.
 
 - Move ESP32-S3 payload generators into separate firmware modules.

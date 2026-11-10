@@ -2,7 +2,7 @@
 #include "usb_transport_internal.h"
 
 #include "device/usbd_pvt.h"
-#include "config.h"
+#include "../core/config.h"
 
 namespace NativeUsbEsp32 {
 using detail::vendor;

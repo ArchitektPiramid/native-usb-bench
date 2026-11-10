@@ -3,7 +3,7 @@
 #include <USB.h>
 #include <cstring>
 
-#include "config.h"
+#include "../core/config.h"
 
 namespace NativeUsbEsp32 {
 using detail::vendor;

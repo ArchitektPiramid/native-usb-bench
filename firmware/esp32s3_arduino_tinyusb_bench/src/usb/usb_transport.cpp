@@ -1,6 +1,6 @@
 #include "usb_transport.h"
 
-#include "config.h"
+#include "../core/config.h"
 #include "usb_transport_internal.h"
 
 namespace NativeUsbEsp32 {

@@ -3,7 +3,7 @@
 #include <Arduino.h>
 #include <esp_arduino_version.h>
 
-#include "nativeusb_protocol.h"
+#include "../protocol/nativeusb_protocol.h"
 
 #define NUB_STRINGIFY_INNER(x) #x
 #define NUB_STRINGIFY(x) NUB_STRINGIFY_INNER(x)
