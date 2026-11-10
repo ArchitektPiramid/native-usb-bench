@@ -14,7 +14,7 @@
 
 // User settings: choose a named ROM DCD write size. 64 B is the known-good baseline.
 // Larger sizes are experimental and deliberately have NO automatic fallback.
-#define NUB_BULK_WRITE_SIZE RomUsb::BulkWriteSize::Bytes1024
+#define NUB_BULK_WRITE_SIZE RomUsb::BulkWriteSize::Bytes64
 #define NUB_LOOP_YIELD_EVERY 64
 
 // For compile-time diagnostics/IRAM choices, edit src/core/config.h;
