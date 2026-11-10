@@ -3,7 +3,7 @@ use crate::protocol::{
 };
 use crate::usb::{
     find_device, open_and_claim, read_firmware_status, send_usb_command, set_device_config,
-    usb_log, ConnectedDeviceInfo,
+    usb_log, AsyncBulkReader, ConnectedDeviceInfo,
 };
 use serde::Serialize;
 use std::{
@@ -17,10 +17,7 @@ use tauri::{AppHandle, Emitter};
 // behavior can be changed without hunting through the worker implementation.
 pub(crate) const STATS_EMIT_INTERVAL_MS: u64 = 250;
 pub(crate) const VISUAL_EMIT_INTERVAL_MS: u64 = 100;
-const BULK_READ_TIMEOUT_MS: u64 = 100;
-const BULK_READ_CHUNK_SIZE: usize = 4096;
 const IDLE_SLEEP_MS: u64 = 5;
-const USB_ERROR_BACKOFF_MS: u64 = 10;
 const WORKER_REPLY_TIMEOUT_MS: u64 = 2500;
 const STREAM_STATE_TIMEOUT_MS: u64 = 1000;
 const TEN_SECOND_SUMMARY_MS: u64 = 10_000;
@@ -124,8 +121,10 @@ pub(crate) fn connect_device(
     let join = thread::spawn(move || {
         let handle = opened.handle;
         let mut parser = FrameParser::new(initial_config);
-        // Read at most one DCD chunk; the parser reassembles larger NUB1 frames.
-        let mut read_buffer = vec![0u8; (parser.config().frame_size as usize).min(BULK_READ_CHUNK_SIZE)];
+        let mut reader = match AsyncBulkReader::new(&handle, ep_in) {
+            Ok(reader) => reader,
+            Err(error) => { usb_log(&app, "error", error); return; }
+        };
         let mut stats = BenchStats::idle(true);
         let mut started_at: Option<Instant> = None;
         let mut last_emit = Instant::now();
@@ -169,6 +168,13 @@ pub(crate) fn connect_device(
                             .and_then(|_| wait_for_stream_state(&handle, true));
                         match &result {
                             Ok(()) => {
+                                if let Err(error) = reader.start() {
+                                    usb_log(&app, "error", error.clone());
+                                    let _ = app.emit("bench-error", error.clone());
+                                    let _ = send_usb_command(&handle, CMD_STOP);
+                                    let _ = reply_tx.send(Err(error));
+                                    continue;
+                                }
                                 stats.streaming = true;
                                 started_at = Some(Instant::now());
                                 last_emit = Instant::now();
@@ -194,26 +200,13 @@ pub(crate) fn connect_device(
                             .and_then(|_| wait_for_stream_state(&handle, false));
                         match &result {
                             Ok(()) => {
-                                // USB may still have packets queued after firmware STOP.
-                                // Drain briefly so the final counters include in-flight frames.
-                                let drain_start = Instant::now();
-                                while drain_start.elapsed() < Duration::from_millis(200) {
-                                    match handle.read_bulk(
-                                        ep_in,
-                                        &mut read_buffer,
-                                        Duration::from_millis(20),
-                                    ) {
-                                        Ok(count) if count > 0 => {
-                                            stats.bytes_total += count as u64;
-                                            sample_usb_reads += 1;
-                                            sample_bytes += count as u64;
-                                            sample_frames += parser.push(&read_buffer[..count]);
-                                            stats.update_parser_stats(&parser);
-                                        }
-                                        Ok(_) | Err(rusb::Error::Timeout) => break,
-                                        Err(_) => { stats.usb_errors += 1; break; }
-                                    }
-                                }
+                                // Collect completed reads before cancelling any pending URBs.
+                                sample_usb_reads += reader.stop_and_collect(|bytes| {
+                                    stats.bytes_total += bytes.len() as u64;
+                                    sample_bytes += bytes.len() as u64;
+                                    sample_frames += parser.push(bytes);
+                                    stats.update_parser_stats(&parser);
+                                });
                                 stats.streaming = false;
                                 if let Some(start) = started_at.take() {
                                     stats.elapsed_ms = start.elapsed().as_millis() as u64;
@@ -247,7 +240,6 @@ pub(crate) fn connect_device(
                         } else {
                             set_device_config(&handle, &capabilities, max_packet_size, &requested).map(|applied| {
                                 parser.set_config(applied.clone());
-                                read_buffer.resize((applied.frame_size as usize).min(BULK_READ_CHUNK_SIZE), 0);
                                 usb_log(
                                     &app,
                                     "info",
@@ -264,59 +256,29 @@ pub(crate) fn connect_device(
                     WorkerCommand::Disconnect => {
                         usb_log(&app, "info", "disconnect requested");
                         let _ = send_usb_command(&handle, CMD_STOP);
+                        reader.cancel_and_drain();
                         break 'worker;
                     }
                 }
             }
 
             if stats.streaming {
-                match handle.read_bulk(
-                    ep_in,
-                    &mut read_buffer,
-                    Duration::from_millis(BULK_READ_TIMEOUT_MS),
-                ) {
-                    Ok(count) if count > 0 => {
-                        sample_usb_reads += 1;
-                        stats.bytes_total += count as u64;
-                        sample_bytes += count as u64;
-                        sample_frames += parser.push(&read_buffer[..count]);
-                        stats.update_parser_stats(&parser);
-                    }
-                    Ok(_) => {}
-                    Err(rusb::Error::Timeout) => {}
-                    Err(rusb::Error::NoDevice) => {
-                        usb_log(&app, "error", "USB device disconnected during Bulk IN");
-                        let _ = app.emit("bench-error", "USB device disconnected".to_string());
-                        break 'worker;
-                    }
+                let result = reader.poll(Duration::from_millis(10), |bytes| {
+                    stats.bytes_total += bytes.len() as u64;
+                    sample_bytes += bytes.len() as u64;
+                    sample_frames += parser.push(bytes);
+                    stats.update_parser_stats(&parser);
+                });
+                match result {
+                    Ok(reads) => sample_usb_reads += reads,
                     Err(error) => {
                         stats.usb_errors += 1;
-                        let message = format!("Bulk IN read failed: {error}");
-                        usb_log(&app, "error", message.clone());
-                        let _ = app.emit("bench-error", message);
-
-                        // A halted pipe or transport I/O failure should not flood
-                        // the log with repeated reads of an unusable endpoint.
-                        if matches!(error, rusb::Error::Pipe | rusb::Error::Io) {
-                            let _ = send_usb_command(&handle, CMD_STOP);
-                            stats.streaming = false;
-                            if let Some(start) = started_at.take() {
-                                stats.elapsed_ms = start.elapsed().as_millis() as u64;
-                                let elapsed = stats.elapsed_ms as f64 / 1000.0;
-                                if elapsed > 0.0 {
-                                    stats.avg_mb_per_sec =
-                                        (stats.bytes_total as f64 / 1_000_000.0) / elapsed;
-                                }
-                            }
-                            stats.mb_per_sec = 0.0;
-                            stats.mbit_per_sec = 0.0;
-                            stats.frames_per_sec = 0.0;
-                            stats.usb_reads_per_sec = 0.0;
-                            let _ = app.emit("bench-stats", stats.clone());
-                            usb_log(&app, "warn", "benchmark stopped after fatal Bulk IN error; reconnect USB if needed");
-                        } else {
-                            thread::sleep(Duration::from_millis(USB_ERROR_BACKOFF_MS));
-                        }
+                        usb_log(&app, "error", error.clone());
+                        let _ = app.emit("bench-error", error);
+                        reader.cancel_and_drain();
+                        let _ = send_usb_command(&handle, CMD_STOP);
+                        stats.streaming = false;
+                        started_at = None;
                     }
                 }
             } else {
