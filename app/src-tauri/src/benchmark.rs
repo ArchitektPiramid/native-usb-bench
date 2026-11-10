@@ -291,9 +291,32 @@ pub(crate) fn connect_device(
                     }
                     Err(error) => {
                         stats.usb_errors += 1;
-                        usb_log(&app, "error", format!("Bulk IN read failed: {error}"));
-                        let _ = app.emit("bench-error", format!("Bulk IN read failed: {error}"));
-                        thread::sleep(Duration::from_millis(USB_ERROR_BACKOFF_MS));
+                        let message = format!("Bulk IN read failed: {error}");
+                        usb_log(&app, "error", message.clone());
+                        let _ = app.emit("bench-error", message);
+
+                        // A halted pipe or transport I/O failure should not flood
+                        // the log with repeated reads of an unusable endpoint.
+                        if matches!(error, rusb::Error::Pipe | rusb::Error::Io) {
+                            let _ = send_usb_command(&handle, CMD_STOP);
+                            stats.streaming = false;
+                            if let Some(start) = started_at.take() {
+                                stats.elapsed_ms = start.elapsed().as_millis() as u64;
+                                let elapsed = stats.elapsed_ms as f64 / 1000.0;
+                                if elapsed > 0.0 {
+                                    stats.avg_mb_per_sec =
+                                        (stats.bytes_total as f64 / 1_000_000.0) / elapsed;
+                                }
+                            }
+                            stats.mb_per_sec = 0.0;
+                            stats.mbit_per_sec = 0.0;
+                            stats.frames_per_sec = 0.0;
+                            stats.usb_reads_per_sec = 0.0;
+                            let _ = app.emit("bench-stats", stats.clone());
+                            usb_log(&app, "warn", "benchmark stopped after fatal Bulk IN error; reconnect USB if needed");
+                        } else {
+                            thread::sleep(Duration::from_millis(USB_ERROR_BACKOFF_MS));
+                        }
                     }
                 }
             } else {
