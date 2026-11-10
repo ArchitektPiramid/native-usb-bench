@@ -7,10 +7,11 @@ Each target implements **NativeUSB Protocol v1.0** so the desktop app can contro
 | MCU | Firmware | Status |
 | --- | --- | --- |
 | ESP32-S3 | [Arduino-ESP32 / TinyUSB](esp32s3_arduino_tinyusb_bench/) | Supported (Bulk IN) |
+| ESP32-S3 | [Arduino-ESP32 / ROM USB](esp32s3_arduino_romusb_bench/) | Experimental (Bulk IN) |
 | ESP32-P4 | — | WIP |
 | STM32 | — | WIP |
 
-Only the ESP32-S3 firmware is currently included. The WIP targets are not ready for benchmarking.
+Both ESP32-S3 implementations use native USB Full-Speed and the same wire protocol. The WIP targets are not ready for benchmarking.
 
 ## How it works
 
@@ -32,6 +33,3 @@ Protocol v1.0 EP0 requests:
 
 Available deterministic generators are **Xorshift32**, **Ramp8** and **LFSR32** (subject to target capabilities). Frame size, endpoint addresses and USB speed are target-specific; the application reports measured transfer throughput, not the USB signaling rate.
 
-## Setup
-
-Flash a target's firmware, connect its **native USB** port to Windows, then use **Refresh → Connect → Start** in the desktop app. Follow the [ESP32-S3 setup guide](esp32s3_arduino_tinyusb_bench/README.md) for Arduino IDE settings, WinUSB identification and target defaults.

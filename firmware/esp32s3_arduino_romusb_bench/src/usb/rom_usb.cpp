@@ -36,8 +36,6 @@ static uint8_t response[160] __attribute__((aligned(4)));
 // USB Chapter 9 and vendor requests may exceed the 24-byte SET_CONFIG payload.
 static uint8_t ep0_payload[256] __attribute__((aligned(4)));
 static uint8_t ep0_vendor[256] __attribute__((aligned(4)));
-static uint8_t config_rx[kCfgSize] __attribute__((aligned(4)));
-static bool config_waiting = false;
 static uint8_t out_packet[64] __attribute__((aligned(4)));
 static uint8_t usb_string[128] __attribute__((aligned(4)));
 static BenchmarkConfig config {PayloadGenerator::Xorshift32,
@@ -158,17 +156,27 @@ void buildConfig() {
   NativeUsbProtocol::putU32LE(response + 20, 1);
 }
 
-void parseConfigIfReady() {
-  if (memcmp(config_rx, "NCF1", 4) != 0 ||
-      NativeUsbProtocol::getU16LE(config_rx + 4) != kCfgSize || config_rx[6] != 1) return;
-  const uint32_t frame = NativeUsbProtocol::getU32LE(config_rx + 12);
-  if (config_rx[7] > 2 || config_rx[8] != NativeUsbProtocol::kModeIn ||
-      frame < 64 || frame > BenchConfig::kMaxFrameSize || frame % BenchConfig::kMps) return;
-  if (runtime.streaming || tx_busy) return;
-  config = {static_cast<PayloadGenerator>(config_rx[7]), config_rx[8], frame,
-            NativeUsbProtocol::getU32LE(config_rx + 16)};
-  memset(config_rx, 0, sizeof(config_rx)); // Consume once after the OUT data stage.
-  config_waiting = false;
+// The ROM control engine calls the vendor handler *after* receiving the OUT
+// data stage. Its data pointer refers to the completed request buffer.
+// Apply before the status stage so a subsequent GET_CONFIG sees the new values.
+int applyConfig(const uint8_t* data, int32_t length) {
+  if (!data || length != kCfgSize ||
+      memcmp(data, "NCF1", 4) != 0 ||
+      NativeUsbProtocol::getU16LE(data + 4) != kCfgSize || data[6] != 1) {
+    return -EINVAL;
+  }
+  const uint32_t frame = NativeUsbProtocol::getU32LE(data + 12);
+  if (data[7] > static_cast<uint8_t>(PayloadGenerator::Lfsr32) ||
+      data[8] != NativeUsbProtocol::kModeIn ||
+      frame < BenchConfig::kMps || frame > BenchConfig::kMaxFrameSize ||
+      frame % BenchConfig::kMps != 0) {
+    return -EINVAL;
+  }
+  if (runtime.streaming || tx_busy) return -EBUSY;
+
+  config = {static_cast<PayloadGenerator>(data[7]), data[8], frame,
+            NativeUsbProtocol::getU32LE(data + 16)};
+  return 0;
 }
 
 bool enqueueCommand(uint8_t command, uint8_t arg) {
@@ -205,13 +213,11 @@ int vendorRequest(usb_setup_packet* setup, int32_t* length, uint8_t** data) {
   }
   if (setup->bmRequestType == 0x40 && setup->bRequest == NativeUsbProtocol::kReqSetConfig &&
       setup->wLength == kCfgSize) {
-    // The ROM control engine writes the OUT data into this persistent buffer.
-    if (!config_waiting) {
-      memset(config_rx, 0, sizeof(config_rx));
-      config_waiting = true;
-    }
-    *length = kCfgSize;
-    *data = config_rx;
+    // The ROM handler is invoked after the control OUT data stage. Never
+    // replace *data: it already contains the received NCF1 configuration.
+    const int rc = applyConfig(*data, *length);
+    if (rc != 0) return rc;
+    *length = 0;  // Zero-length status response to the host.
     return 0;
   }
   if (setup->bmRequestType != 0xC0) return -EINVAL;
@@ -487,8 +493,6 @@ bool begin() {
 }
 
 void task() {
-  // Avoid scanning the EP0 config buffer during high-rate Bulk IN streaming.
-  if (config_waiting) parseConfigIfReady();
   if (usb_started && connected && !ep1_ready) ensureBulkInEndpoint();
   serviceBulkIn();
 #if NUB_ROMUSB_LOG_LEVEL >= 1
