@@ -30,6 +30,11 @@ const SUPPORTED_TARGETS: &[SupportedTarget] = &[
         pid: 0x4013,
         label: "NativeUSB ESP32-S3 target",
     },
+    SupportedTarget {
+        vid: 0xCAFE,
+        pid: 0x4014,
+        label: "NativeUSB ESP32-P4 HS target",
+    },
 ];
 
 #[derive(Clone, Copy, Debug)]

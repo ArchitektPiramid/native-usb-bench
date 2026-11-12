@@ -121,7 +121,7 @@ pub(crate) fn connect_device(
     let join = thread::spawn(move || {
         let handle = opened.handle;
         let mut parser = FrameParser::new(initial_config);
-        let mut reader = match AsyncBulkReader::new(&handle, ep_in) {
+        let mut reader = match AsyncBulkReader::new(&handle, ep_in, max_packet_size >= 512) {
             Ok(reader) => reader,
             Err(error) => { usb_log(&app, "error", error); return; }
         };

@@ -9,8 +9,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(crate) const READ_BYTES: usize = 8192;
-pub(crate) const READ_DEPTH: usize = 4;
+// Full-Speed keeps the original low-memory read queue. HS targets receive
+// larger submitted URBs so the controller almost always has pending IN tokens.
+const FS_READ_BYTES: usize = 8192;
+const FS_READ_DEPTH: usize = 4;
+const HS_READ_BYTES: usize = 64 * 1024;
+const HS_READ_DEPTH: usize = 16;
 const READ_TIMEOUT_MS: u32 = 250;
 
 struct Slot {
@@ -43,21 +47,30 @@ pub(crate) struct AsyncBulkReader {
 }
 
 impl AsyncBulkReader {
-    pub(crate) fn new(handle: &rusb::DeviceHandle<GlobalContext>, endpoint: u8) -> Result<Self, String> {
+    pub(crate) fn new(
+        handle: &rusb::DeviceHandle<GlobalContext>,
+        endpoint: u8,
+        high_speed: bool,
+    ) -> Result<Self, String> {
+        let (depth, read_bytes) = if high_speed {
+            (HS_READ_DEPTH, HS_READ_BYTES)
+        } else {
+            (FS_READ_DEPTH, FS_READ_BYTES)
+        };
         let mut reader = Self {
-            slots: Vec::with_capacity(READ_DEPTH),
+            slots: Vec::with_capacity(depth),
             handle: handle.as_raw(),
             endpoint,
             next_ticket: 0,
             next_to_parse: 0,
             active: false,
         };
-        for _ in 0..READ_DEPTH {
+        for _ in 0..depth {
             let raw = NonNull::new(unsafe { ffi::libusb_alloc_transfer(0) })
                 .ok_or_else(|| "Unable to allocate a libusb transfer".to_string())?;
             let slot = Box::new(Slot {
                 transfer: raw,
-                data: vec![0; READ_BYTES].into_boxed_slice(),
+                data: vec![0; read_bytes].into_boxed_slice(),
                 complete: AtomicBool::new(false),
                 status: AtomicI32::new(0),
                 actual: AtomicI32::new(0),
